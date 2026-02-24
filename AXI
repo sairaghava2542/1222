@@ -1,0 +1,3586 @@
+| Feature               | AHB    | AXI         |
+| --------------------- | ------ | ----------- |
+| Channels              | 1      | 5           |
+| Read/Write            | Shared | Separate    |
+| Outstanding transfers | No     | Yes         |
+| Burst                 | Yes    | Yes         |
+| IDs                   | No     | Yes         |
+| Handshake             | HREADY | VALID/READY |
+Write Address Channel  (AW)
+Write Data Channel     (W)
+Write Response Channel (B)
+
+Read Address Channel   (AR)
+Read Data Channel      (R)
+-------------------------------------------------
+Cycle   VALID   READY   Transfer?
+---------------------------------
+1        1       0        NO
+2        1       0        NO
+3        1       1        YES  ← Transfer
+4        1       1        YES
+---------------------------------------------------
+1️⃣ Build a small VALID/READY demo module
+2️⃣ Build AXI-Stream (simplest AXI form)
+3️⃣ Then AXI4-Lite
+4️⃣ Then full AXI4
+
+VALID = 1
+READY = 0
+
+DATA MUST NOT CHANGE.
+
+If data changes → protocol violation.
+
+This rule is extremely important in AXI interviews.
+1️⃣ Pure VALID/READY Demo
+Producer  →  Consumer
+Producer:
+
+Sends numbers 1 to 10
+
+Uses VALID
+
+Consumer:
+
+Randomly stalls using READY
+
+Accepts data only when VALID && READY
+
+This will visually show handshake behavior.
+=========Producer Module================
+module producer (
+    input  wire clk,
+    input  wire rstn,
+    input  wire ready,
+    output reg  valid,
+    output reg [7:0] data
+);
+
+    reg [7:0] counter;
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            counter <= 1;
+            valid   <= 0;
+            data    <= 0;
+        end
+        else begin
+            valid <= 1;   // Always trying to send
+
+            if (valid && ready) begin
+                data <= counter;
+                counter <= counter + 1;
+            end
+        end
+    end
+
+endmodule
+=================Consumer Module (Random Stall)=====================
+🎯 What You Should Observe
+
+Sometimes READY = 0
+→ Data does NOT change
+→ No transfer
+When READY = 1
+→ Transfer happens
+→ Counter increments
+
+Data increases only when VALID && READY
+=============================================================
+🧠 What You Just Built
+You built the foundation of:
+AXI
+AXI-Stream
+PCIe
+TileLink
+Most modern bus protocols
+They all use this handshake style.
+===============================================================
+Now that handshake is clear, we move to:
+🥈 AXI-Stream (real protocol signals)
+It adds:
+TVALID
+TREADY
+TDATA
+TLAST
+This introduces packet concept.
+===============================================================
+🥈 What Is AXI-Stream?
+🥈 STEP 2 — AXI-Stream
+
+AXI-Stream = Simplest AXI form.
+
+Signals:
+TVALID
+TREADY
+TDATA
+No address.
+No response channel.
+Just streaming data.
+This builds:
+Backpressure handling
+Data stability rule
+Pipeline understanding
+AXI-Stream is used for:
+Video pipelines
+DSP chains
+DMA transfers
+High-speed streaming data
+It has no address.
+It is just data flowing
+| Signal | Meaning               |
+| ------ | --------------------- |
+| TVALID | Sender has valid data |
+| TREADY | Receiver ready        |
+| TDATA  | Data                  |
+| TLAST  | End of packet         |
+Transfer happens when:
+TVALID && TREADY
+---------------------------------------------
+🎯 What We Will Build
+We build:
+AXI-Stream Master → AXI-Stream Slav
+Master:
+Sends 8 numbers
+Asserts TLAST on last beat
+Slave:
+Randomly stalls (TREADY)
+Prints received data
+Detects packet end
+======================================================
+module axis_master (
+    input  wire clk,
+    input  wire rstn,
+    input  wire tready,
+    output reg  tvalid,
+    output reg [7:0] tdata,
+    output reg  tlast
+);
+
+    reg [3:0] count;
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            count  <= 0;
+            tvalid <= 0;
+            tdata  <= 0;
+            tlast  <= 0;
+        end
+        else begin
+            tvalid <= 1;  // always trying to send
+
+            if (tvalid && tready) begin
+                tdata <= count;
+                count <= count + 1;
+
+                if (count == 7)
+                    tlast <= 1;
+                else
+                    tlast <= 0;
+            end
+        end
+    end
+endmodule
+====================================================================
+module axis_slave (
+    input  wire clk,
+    input  wire rstn,
+    input  wire tvalid,
+    input  wire [7:0] tdata,
+    input  wire tlast,
+    output reg  tready
+);
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn)
+            tready <= 0;
+        else
+            tready <= $urandom_range(0,1); // random stall
+    end
+
+    always @(posedge clk) begin
+        if (tvalid && tready) begin
+            $display("Received: %0d  Time: %0t", tdata, $time);
+
+            if (tlast)
+                $display("---- End of Packet ----");
+        end
+    end
+endmodule
+=============================================================
+🎯 What You Should Observe
+When TREADY = 0 → Data freezes
+When TREADY = 1 → Data transfers
+TLAST goes high on last beat
+Packet boundary is visible
+==========================================================
+🥉 STEP 3 — AXI4-Lite
+Now we introduce:
+Address channel
+Data channel
+Response channel
+Still no burst
+Single transfer only
+This is used for:
+Control registers
+Configuration blocks
+Most FPGA IP uses AXI4-Lite.
+🚀 Next Step
+
+Now we move to:
+
+🥉 AXI4-Lite (real memory-mapped protocol)
+
+That will introduce:
+
+Address channel
+
+Write data channel
+
+Write response channel
+
+Read address channel
+
+Read data channel
+
+No burst yet. Clean and structured.
+
+🏗 What We Will Build
+
+We build:
+
+Simple AXI4-Lite Slave (memory-mapped registers)
+
+Then simple Master testbench to drive it
+
+We start with the slave first, because:
+
+In real systems:
+CPU (master) → peripheral (slave)
+=========================================================
+🔥 AXI4-Lite Channels
+Write Channels
+1️⃣ Write Address Channel
+AWADDR
+AWVALID
+AWREADY
+2️⃣ Write Data Channel
+WDATA
+WVALID
+WREADY
+3️⃣ Write Response Channel
+BRESP
+BVALID
+BREADY
+Read Channels
+4️⃣ Read Address Channel
+ARADDR
+ARVALID
+ARREADY
+5️⃣ Read Data Channel
+RDATA
+RVALID
+RREADY
+RRESP
+==============================================================
+🎯 Write Transaction Flow (Very Important)
+Step 1 — Master sends address
+
+Transfer when:
+
+AWVALID && AWREADY
+Step 2 — Master sends data
+
+Transfer when:
+
+WVALID && WREADY
+Step 3 — Slave sends response
+
+Transfer when:
+
+BVALID && BREADY
+
+Write complete only after response handshake.
+================================================================
+🎯 Read Transaction Flow
+Step 1 — Master sends address
+ARVALID && ARREADY
+Step 2 — Slave returns data
+RVALID && RREADY
+
+Read complete.
+========================================================================
+🏗 What We Will Build
+We build:
+Simple AXI4-Lite Slave (memory-mapped registers)
+Then simple Master testbench to drive it
+We start with the slave first, because:
+In real systems:
+CPU (master) → peripheral (slave)
+===============================================================
+If master sends write address (AWVALID=1)
+and slave sets AWREADY=1,
+
+but WVALID=0,
+Is the write complete?
+A) Yes
+B) No CORRECT
+======================================================
+In AXI4-Lite, a write transaction has 3 phases:
+
+1️⃣ Write Address handshake
+2️⃣ Write Data handshake
+3️⃣ Write Response handshake
+
+The write is complete only after all three are done.
+Let’s Analyze Your Case
+You said:
+AWVALID = 1
+AWREADY = 1 ✅ → Address accepted
+WVALID = 0 ❌ → No data yet
+So what happened?
+
+👉 The slave only received the address.
+👉 No data has been written.
+👉 No response generated.
+Therefore:
+🚫 The write is NOT complete
+======================================.
+AW handshake is done
+W handshake is done
+But BVALID = 1 and BREADY = 0
+Then:
+❌ The write is NOT complete yet.
+===========================
+We’ll design:
+4 registers (32-bit)
+Address map:
+0x00 → reg0
+0x04 → reg1
+0x08 → reg2
+0x0C → reg3
+Proper AXI handshakes
+Correct write + read behavior
+🏗 AXI4-Lite Slave (Simple & Clean Version)
+This version assumes:
+Single outstanding transaction
+Address and data arrive roughly together (valid for AXI-Lite)
+Always OKAY response
+====================================
+module axi_lite_slave (
+    input  wire        ACLK,
+    input  wire        ARESETn,
+
+    //================ WRITE ADDRESS CHANNEL ================
+    input  wire [31:0] AWADDR,
+    input  wire        AWVALID,
+    output reg         AWREADY,
+
+    //================ WRITE DATA CHANNEL ===================
+    input  wire [31:0] WDATA,
+    input  wire [3:0]  WSTRB,
+    input  wire        WVALID,
+    output reg         WREADY,
+
+    //================ WRITE RESPONSE CHANNEL ===============
+    output reg  [1:0]  BRESP,
+    output reg         BVALID,
+    input  wire        BREADY,
+
+    //================ READ ADDRESS CHANNEL =================
+    input  wire [31:0] ARADDR,
+    input  wire        ARVALID,
+    output reg         ARREADY,
+
+    //================ READ DATA CHANNEL ====================
+    output reg [31:0]  RDATA,
+    output reg [1:0]   RRESP,
+    output reg         RVALID,
+    input  wire        RREADY
+);
+
+    //========================================================
+    // 4 Internal Registers
+    //========================================================
+
+    reg [31:0] reg0, reg1, reg2, reg3;
+
+    wire write_en;
+    wire read_en;
+
+    assign write_en = AWVALID && WVALID && AWREADY && WREADY;
+    assign read_en  = ARVALID && ARREADY;
+
+    //========================================================
+    // WRITE ADDRESS & DATA HANDSHAKE
+    //========================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn) begin
+            AWREADY <= 0;
+            WREADY  <= 0;
+        end
+        else begin
+            AWREADY <= ~AWREADY && AWVALID;
+            WREADY  <= ~WREADY  && WVALID;
+        end
+    end
+
+    //========================================================
+    // WRITE LOGIC
+    //========================================================
+
+    always @(posedge ACLK) begin
+        if (!ARESETn) begin
+            reg0 <= 0;
+            reg1 <= 0;
+            reg2 <= 0;
+            reg3 <= 0;
+        end
+        else if (write_en) begin
+            case (AWADDR[3:2])   // word aligned
+                2'b00: reg0 <= WDATA;
+                2'b01: reg1 <= WDATA;
+                2'b10: reg2 <= WDATA;
+                2'b11: reg3 <= WDATA;
+            endcase
+        end
+    end
+
+    //========================================================
+    // WRITE RESPONSE
+    //========================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn) begin
+            BVALID <= 0;
+            BRESP  <= 2'b00;  // OKAY
+        end
+        else if (write_en) begin
+            BVALID <= 1;
+            BRESP  <= 2'b00;  // OKAY
+        end
+        else if (BVALID && BREADY) begin
+            BVALID <= 0;
+        end
+    end
+
+    //========================================================
+    // READ ADDRESS HANDSHAKE
+    //========================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn)
+            ARREADY <= 0;
+        else
+            ARREADY <= ~ARREADY && ARVALID;
+    end
+
+    //========================================================
+    // READ LOGIC
+    //========================================================
+
+    always @(posedge ACLK) begin
+        if (!ARESETn) begin
+            RVALID <= 0;
+            RRESP  <= 2'b00;
+            RDATA  <= 0;
+        end
+        else if (read_en) begin
+            case (ARADDR[3:2])
+                2'b00: RDATA <= reg0;
+                2'b01: RDATA <= reg1;
+                2'b10: RDATA <= reg2;
+                2'b11: RDATA <= reg3;
+            endcase
+
+            RVALID <= 1;
+            RRESP  <= 2'b00;  // OKAY
+        end
+        else if (RVALID && RREADY) begin
+            RVALID <= 0;
+        end
+    end
+
+endmodule
+=========================================================================
+🎯 What You Just Built
+
+You now understand:
+
+AXI memory-mapped protocol
+
+Separate write channels
+
+Separate read channels
+
+Response phase handling
+
+Proper transaction completion
+
+This is real IP-level RTL.
+============================================================
+Excellent question 👏🔥
+You are thinking correctly now.
+
+We built the **AXI4-Lite Slave**.
+
+Now we need a **Master** to drive it.
+
+In real systems:
+
+* Master = CPU / DMA / Testbench
+* Slave = Peripheral (register block)
+
+For learning, we build a **simple AXI4-Lite Master RTL (single transaction engine)**.
+
+---
+
+# 🧠 First Understand
+
+AXI-Lite Master must generate:
+
+### Write Transaction
+
+1. AWVALID
+2. WVALID
+3. Wait for AWREADY & WREADY
+4. Wait for BVALID
+5. Assert BREADY
+
+### Read Transaction
+
+1. ARVALID
+2. Wait for ARREADY
+3. Wait for RVALID
+4. Assert RREADY
+
+---
+
+# 🏗 Simple AXI-Lite Master RTL
+
+This master:
+
+* Can do one write or one read
+* Controlled by `start_write` and `start_read`
+* Uses simple FSM
+
+---
+
+## ✅ AXI-Lite Master Code
+
+```verilog
+module axi_lite_master (
+
+    input  wire        ACLK,
+    input  wire        ARESETn,
+
+    // Control Signals
+    input  wire        start_write,
+    input  wire        start_read,
+    input  wire [31:0] write_addr,
+    input  wire [31:0] write_data,
+    input  wire [31:0] read_addr,
+
+    output reg  [31:0] read_data,
+    output reg         done,
+
+    //================ WRITE ADDRESS CHANNEL ================
+    output reg [31:0] AWADDR,
+    output reg        AWVALID,
+    input  wire       AWREADY,
+
+    //================ WRITE DATA CHANNEL ===================
+    output reg [31:0] WDATA,
+    output reg        WVALID,
+    input  wire       WREADY,
+
+    //================ WRITE RESPONSE CHANNEL ===============
+    input  wire [1:0] BRESP,
+    input  wire       BVALID,
+    output reg        BREADY,
+
+    //================ READ ADDRESS CHANNEL =================
+    output reg [31:0] ARADDR,
+    output reg        ARVALID,
+    input  wire       ARREADY,
+
+    //================ READ DATA CHANNEL ====================
+    input  wire [31:0] RDATA,
+    input  wire [1:0]  RRESP,
+    input  wire        RVALID,
+    output reg         RREADY
+);
+
+    //========================================================
+    // FSM States
+    //========================================================
+
+    parameter IDLE        = 3'd0;
+    parameter WRITE_ADDR  = 3'd1;
+    parameter WRITE_RESP  = 3'd2;
+    parameter READ_ADDR   = 3'd3;
+    parameter READ_DATA   = 3'd4;
+
+    reg [2:0] state;
+
+    //========================================================
+    // FSM
+    //========================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn) begin
+            state    <= IDLE;
+            done     <= 0;
+
+            AWVALID  <= 0;
+            WVALID   <= 0;
+            BREADY   <= 0;
+            ARVALID  <= 0;
+            RREADY   <= 0;
+        end
+        else begin
+            case (state)
+
+            //================================================
+            IDLE:
+            begin
+                done <= 0;
+
+                if (start_write) begin
+                    AWADDR  <= write_addr;
+                    WDATA   <= write_data;
+                    AWVALID <= 1;
+                    WVALID  <= 1;
+                    state   <= WRITE_ADDR;
+                end
+                else if (start_read) begin
+                    ARADDR  <= read_addr;
+                    ARVALID <= 1;
+                    state   <= READ_ADDR;
+                end
+            end
+
+            //================================================
+            WRITE_ADDR:
+            begin
+                if (AWREADY)
+                    AWVALID <= 0;
+
+                if (WREADY)
+                    WVALID <= 0;
+
+                if (AWREADY && WREADY) begin
+                    BREADY <= 1;
+                    state  <= WRITE_RESP;
+                end
+            end
+
+            //================================================
+            WRITE_RESP:
+            begin
+                if (BVALID) begin
+                    BREADY <= 0;
+                    done   <= 1;
+                    state  <= IDLE;
+                end
+            end
+
+            //================================================
+            READ_ADDR:
+            begin
+                if (ARREADY) begin
+                    ARVALID <= 0;
+                    RREADY  <= 1;
+                    state   <= READ_DATA;
+                end
+            end
+            //================================================
+            READ_DATA:
+            begin
+                if (RVALID) begin
+                    read_data <= RDATA;
+                    RREADY    <= 0;
+                    done      <= 1;
+                    state     <= IDLE;
+                end
+            end
+
+            endcase
+        end
+    end
+endmodule
+# 🎯 What This Master Can Do
+
+✔ Write one register
+✔ Read one register
+✔ Complete full handshake correctly
+✔ Signal `done` when finished
+# 🧠 Now You Have Full Syst
+You now have
+* AXI-Lite Master
+* AXI-Lite Slave
+* Proper handshakes
+* Full write + read flow
+You can connect them directly:
+Master  <---->  Slave
+
+And simulate.
+---
+# 🚀 What Professionals Do Next
+Now real learning begins:
+1️⃣ Improve master to allow pipelined transactions
+2️⃣ Add wait-state support
+3️⃣ Add protocol checker
+4️⃣ Move to full AXI4 (burst support)
+5️⃣ Learn interconnect
+A) Connect master + slave and build full top module
+B) Write proper testbench
+C) Upgrade to full AXI4 burst
+axi_lite_top.v
+===============================================
+module axi_lite_top (
+
+    input  wire        ACLK,
+    input  wire        ARESETn,
+
+    // Control from testbench
+    input  wire        start_write,
+    input  wire        start_read,
+    input  wire [31:0] write_addr,
+    input  wire [31:0] write_data,
+    input  wire [31:0] read_addr,
+
+    output wire [31:0] read_data,
+    output wire        done
+);
+
+    //================ AXI Signals ===================
+
+    wire [31:0] AWADDR;
+    wire        AWVALID;
+    wire        AWREADY;
+
+    wire [31:0] WDATA;
+    wire        WVALID;
+    wire        WREADY;
+
+    wire [1:0]  BRESP;
+    wire        BVALID;
+    wire        BREADY;
+
+    wire [31:0] ARADDR;
+    wire        ARVALID;
+    wire        ARREADY;
+
+    wire [31:0] RDATA;
+    wire [1:0]  RRESP;
+    wire        RVALID;
+    wire        RREADY;
+
+    //================ MASTER ===================
+
+    axi_lite_master master_inst (
+
+        .ACLK(ACLK),
+        .ARESETn(ARESETn),
+
+        .start_write(start_write),
+        .start_read(start_read),
+        .write_addr(write_addr),
+        .write_data(write_data),
+        .read_addr(read_addr),
+
+        .read_data(read_data),
+        .done(done),
+
+        .AWADDR(AWADDR),
+        .AWVALID(AWVALID),
+        .AWREADY(AWREADY),
+
+        .WDATA(WDATA),
+        .WVALID(WVALID),
+        .WREADY(WREADY),
+
+        .BRESP(BRESP),
+        .BVALID(BVALID),
+        .BREADY(BREADY),
+
+        .ARADDR(ARADDR),
+        .ARVALID(ARVALID),
+        .ARREADY(ARREADY),
+
+        .RDATA(RDATA),
+        .RRESP(RRESP),
+        .RVALID(RVALID),
+        .RREADY(RREADY)
+    );
+
+    //================ SLAVE ===================
+
+    axi_lite_slave slave_inst (
+
+        .ACLK(ACLK),
+        .ARESETn(ARESETn),
+
+        .AWADDR(AWADDR),
+        .AWVALID(AWVALID),
+        .AWREADY(AWREADY),
+
+        .WDATA(WDATA),
+        .WSTRB(4'b1111),
+        .WVALID(WVALID),
+        .WREADY(WREADY),
+
+        .BRESP(BRESP),
+        .BVALID(BVALID),
+        .BREADY(BREADY),
+
+        .ARADDR(ARADDR),
+        .ARVALID(ARVALID),
+        .ARREADY(ARREADY),
+
+        .RDATA(RDATA),
+        .RRESP(RRESP),
+        .RVALID(RVALID),
+        .RREADY(RREADY)
+    );
+
+endmodule
+==================================================
+🚀 What Changes From AXI-Lite → AXI4?
+
+AXI4 adds:
+
+Feature	AXI4-Lite	AXI4
+Burst transfers	❌ No	✅ Yes
+Multiple outstanding	❌ No	✅ Yes
+IDs	❌ No	✅ Yes
+Burst types	❌ No	✅ FIXED / INCR / WRAP
+Length field	❌ No	✅ Yes
+Size field	❌ No	✅ Yes
+=======================================
+🧠 AXI4 Channels (Still 5 Channels)
+Write Path
+AW (Address)
+W (Data – multiple beats)
+B (Response)
+Read Path
+AR (Address)
+R (Data – multiple beats)
+=========================================
+🔥 New Important Signals in AXI4
+Write Address Channel
+AWID
+AWLEN     // Burst length (0–255 → 1–256 beats)
+AWSIZE    // Bytes per beat (2^AWSIZE)
+AWBURST   // FIXED / INCR / WRAP
+Write Data Channel
+WLAST     // Indicates last beat of burst
+Read Channel
+RLAST
+========================================
+🧠 Example: INCR4 Burst
+
+Suppose:
+
+AWADDR = 0x0000_1000
+AWLEN  = 3        // 4 beats (0–3)
+AWSIZE = 2        // 4 bytes per beat
+AWBURST= INCR
+Address progression:
+Beat 0 → 0x1000
+Beat 1 → 0x1004
+Beat 2 → 0x1008
+Beat 3 → 0x100C
+WLAST = 1 on beat 3.
+=========================================
+🧠 Example: WRAP4 Burst
+Same setup but WRAP:
+Addresses wrap inside 16-byte boundary.
+If starting at 0x100C:
+0x100C
+0x1000
+0x1004
+0x1008
+That’s the difference.
+========================================
+📚 Correct Learning Order for AXI4
+Step 1️⃣
+Implement AXI4 Master that supports:
+INCR4 burst only
+Single outstanding
+No IDs
+Step 2️⃣
+Implement AXI4 Slave with burst support
+Step 3️⃣
+Add WRAP burst
+Step 4️⃣
+Add outstanding transactions
+==============================
+⚠ Important
+AXI4 is NOT just AXI-Lite with length field.
+You must handle:
+Address generation
+Beat counter
+WLAST / RLAST generation
+Proper handshake per beat
+Response after full burst
+==========================================
+👉 AXI4 Master – INCR4 Write Burst Only
+(Simple and clean)
+++++======================================
+✅ AXI4 Master
+– INCR4 write burst
+– INCR4 read burst
+– Single outstanding
+– No ID support (simplified learning version)
+
+This is the correct first full AXI4 step.
+========================================
+🧠 Architecture First (Very Important)
+
+We must handle:
+
+Write Burst Flow
+
+1️⃣ AW handshake (1 cycle)
+2️⃣ Send 4 WDATA beats
+3️⃣ Assert WLAST on beat 4
+4️⃣ Wait for BVALID
+5️⃣ Complete
+
+Read Burst Flow
+
+1️⃣ AR handshake
+2️⃣ Wait for 4 RDATA beats
+3️⃣ Detect RLAST
+4️⃣ Complete
+==========================================
+🎯 Supported Configuration
+
+We hardcode:
+
+AWLEN  = 3      // 4 beats
+AWSIZE = 2      // 4 bytes
+AWBURST= INCR
+
+Same for read.
+===========================================
+🏗 AXI4 Master – INCR4 Read + Write
+=============================================
+module axi4_master_incr4 (
+
+    input  wire        ACLK,
+    input  wire        ARESETn,
+
+    input  wire        start_write,
+    input  wire        start_read,
+    input  wire [31:0] base_addr,
+    input  wire [31:0] write_data,
+
+    output reg         done,
+
+    //================ WRITE ADDRESS CHANNEL ================
+    output reg [31:0]  AWADDR,
+    output reg [7:0]   AWLEN,
+    output reg [2:0]   AWSIZE,
+    output reg [1:0]   AWBURST,
+    output reg         AWVALID,
+    input  wire        AWREADY,
+
+    //================ WRITE DATA CHANNEL ===================
+    output reg [31:0]  WDATA,
+    output reg         WVALID,
+    output reg         WLAST,
+    input  wire        WREADY,
+
+    //================ WRITE RESPONSE ========================
+    input  wire        BVALID,
+    output reg         BREADY,
+
+    //================ READ ADDRESS CHANNEL =================
+    output reg [31:0]  ARADDR,
+    output reg [7:0]   ARLEN,
+    output reg [2:0]   ARSIZE,
+    output reg [1:0]   ARBURST,
+    output reg         ARVALID,
+    input  wire        ARREADY,
+
+    //================ READ DATA CHANNEL ====================
+    input  wire [31:0] RDATA,
+    input  wire        RVALID,
+    input  wire        RLAST,
+    output reg         RREADY
+);
+
+    //========================================================
+    // FSM States
+    //========================================================
+
+    parameter IDLE        = 3'd0;
+    parameter WRITE_ADDR  = 3'd1;
+    parameter WRITE_DATA  = 3'd2;
+    parameter WRITE_RESP  = 3'd3;
+    parameter READ_ADDR   = 3'd4;
+    parameter READ_DATA   = 3'd5;
+
+    reg [2:0] state;
+    reg [2:0] beat_count;
+
+    //========================================================
+    // FSM
+    //========================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn) begin
+            state <= IDLE;
+            done  <= 0;
+
+            AWVALID <= 0;
+            WVALID  <= 0;
+            BREADY  <= 0;
+            ARVALID <= 0;
+            RREADY  <= 0;
+            WLAST   <= 0;
+        end
+        else begin
+
+            case (state)
+
+            //================================================
+            IDLE:
+            begin
+                done <= 0;
+                beat_count <= 0;
+
+                if (start_write) begin
+                    AWADDR  <= base_addr;
+                    AWLEN   <= 8'd3;     // 4 beats
+                    AWSIZE  <= 3'd2;     // 4 bytes
+                    AWBURST <= 2'b01;    // INCR
+                    AWVALID <= 1;
+                    state   <= WRITE_ADDR;
+                end
+                else if (start_read) begin
+                    ARADDR  <= base_addr;
+                    ARLEN   <= 8'd3;
+                    ARSIZE  <= 3'd2;
+                    ARBURST <= 2'b01;
+                    ARVALID <= 1;
+                    state   <= READ_ADDR;
+                end
+            end
+
+            //================================================
+            WRITE_ADDR:
+            begin
+                if (AWREADY) begin
+                    AWVALID <= 0;
+                    WVALID  <= 1;
+                    state   <= WRITE_DATA;
+                end
+            end
+
+            //================================================
+            WRITE_DATA:
+            begin
+                if (WREADY) begin
+                    WDATA <= write_data + beat_count;
+
+                    if (beat_count == 3) begin
+                        WLAST <= 1;
+                        state <= WRITE_RESP;
+                        WVALID <= 0;
+                        BREADY <= 1;
+                    end
+
+                    beat_count <= beat_count + 1;
+                end
+            end
+
+            //================================================
+            WRITE_RESP:
+            begin
+                if (BVALID) begin
+                    BREADY <= 0;
+                    WLAST  <= 0;
+                    done   <= 1;
+                    state  <= IDLE;
+                end
+            end
+
+            //================================================
+            READ_ADDR:
+            begin
+                if (ARREADY) begin
+                    ARVALID <= 0;
+                    RREADY  <= 1;
+                    state   <= READ_DATA;
+                end
+            end
+
+            //================================================
+            READ_DATA:
+            begin
+                if (RVALID) begin
+                    if (RLAST) begin
+                        RREADY <= 0;
+                        done   <= 1;
+                        state  <= IDLE;
+                    end
+                end
+            end
+
+            endcase
+        end
+    end
+
+endmodule
+==================================================================
+🧠 What This Master Does
+Write Burst
+Sends 4 beats
+Increments data each beat
+Generates WLAST correctly
+Waits for BVALID
+Read Burst
+Requests 4 beats
+Waits for RLAST
+Completes transaction
+=======================================================================
+🎯 What You Still Need
+This master needs:
+👉 AXI4 Slave that supports burst
+👉 Address generation
+👉 RLAST generation
+👉 WREADY control
+🚀 Next Step
+We must now build:
+A) AXI4 Burst Slave (INCR4 only)
+B) Add WRAP support
+C) Add ID support
+==========================================================
+Perfect 😎🔥
+Now we build a **real AXI4 Burst Slave (INCR4 only)**.
+
+This slave will:
+
+✅ Accept INCR burst
+✅ Handle AWLEN
+✅ Store multiple beats
+✅ Generate WREADY correctly
+✅ Generate BVALID after full burst
+✅ Generate RLAST correctly
+✅ Increment address per beat
+
+We still keep it:
+
+* Single outstanding transaction
+* No ID
+* INCR only
+* No WRAP yet
+
+---
+
+# 🧠 Design Plan (Important)
+
+## Write Burst Flow
+
+1️⃣ Accept AW (store address + length)
+2️⃣ Accept W beats
+3️⃣ Count beats
+4️⃣ On WLAST → assert BVALID
+5️⃣ Wait BREADY
+
+---
+
+## Read Burst Flow
+
+1️⃣ Accept AR
+2️⃣ Start sending data
+3️⃣ Increment address per beat
+4️⃣ Assert RLAST on last beat
+
+---
+
+# 🏗 Memory Model
+
+We implement simple internal RAM:
+
+```verilog
+reg [31:0] mem [0:255];
+```
+
+Address indexing:
+
+```
+mem[address >> 2]
+```
+
+Because word aligned.
+
+---
+
+# ✅ AXI4 Slave – INCR4 Only
+
+```verilog
+module axi4_slave_incr4 (
+
+    input  wire        ACLK,
+    input  wire        ARESETn,
+
+    //================ WRITE ADDRESS ==================
+    input  wire [31:0] AWADDR,
+    input  wire [7:0]  AWLEN,
+    input  wire [2:0]  AWSIZE,
+    input  wire [1:0]  AWBURST,
+    input  wire        AWVALID,
+    output reg         AWREADY,
+
+    //================ WRITE DATA =====================
+    input  wire [31:0] WDATA,
+    input  wire        WVALID,
+    input  wire        WLAST,
+    output reg         WREADY,
+
+    //================ WRITE RESPONSE =================
+    output reg         BVALID,
+    input  wire        BREADY,
+
+    //================ READ ADDRESS ===================
+    input  wire [31:0] ARADDR,
+    input  wire [7:0]  ARLEN,
+    input  wire [2:0]  ARSIZE,
+    input  wire [1:0]  ARBURST,
+    input  wire        ARVALID,
+    output reg         ARREADY,
+
+    //================ READ DATA ======================
+    output reg [31:0]  RDATA,
+    output reg         RVALID,
+    output reg         RLAST,
+    input  wire        RREADY
+);
+
+    //==================================================
+    // Internal Memory
+    //==================================================
+
+    reg [31:0] mem [0:255];
+
+    //==================================================
+    // Write Control
+    //==================================================
+
+    reg [31:0] write_addr;
+    reg [7:0]  write_len;
+    reg [7:0]  write_count;
+
+    //==================================================
+    // Read Control
+    //==================================================
+
+    reg [31:0] read_addr;
+    reg [7:0]  read_len;
+    reg [7:0]  read_count;
+
+    //==================================================
+    // WRITE ADDRESS HANDSHAKE
+    //==================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn)
+            AWREADY <= 0;
+        else
+            AWREADY <= ~AWREADY && AWVALID;
+    end
+
+    // Capture write address
+    always @(posedge ACLK) begin
+        if (AWVALID && AWREADY) begin
+            write_addr  <= AWADDR;
+            write_len   <= AWLEN;
+            write_count <= 0;
+        end
+    end
+
+    //==================================================
+    // WRITE DATA HANDSHAKE
+    //==================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn)
+            WREADY <= 0;
+        else if (AWVALID && AWREADY)
+            WREADY <= 1;
+        else if (WLAST && WVALID && WREADY)
+            WREADY <= 0;
+    end
+
+    // Write data to memory
+    always @(posedge ACLK) begin
+        if (WVALID && WREADY) begin
+            mem[(write_addr >> 2) + write_count] <= WDATA;
+            write_count <= write_count + 1;
+        end
+    end
+
+    //==================================================
+    // WRITE RESPONSE
+    //==================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn)
+            BVALID <= 0;
+        else if (WLAST && WVALID && WREADY)
+            BVALID <= 1;
+        else if (BVALID && BREADY)
+            BVALID <= 0;
+    end
+
+    //==================================================
+    // READ ADDRESS HANDSHAKE
+    //==================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn)
+            ARREADY <= 0;
+        else
+            ARREADY <= ~ARREADY && ARVALID;
+    end
+
+    // Capture read address
+    always @(posedge ACLK) begin
+        if (ARVALID && ARREADY) begin
+            read_addr  <= ARADDR;
+            read_len   <= ARLEN;
+            read_count <= 0;
+            RVALID     <= 1;
+        end
+    end
+
+    //==================================================
+    // READ DATA GENERATION
+    //==================================================
+
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn) begin
+            RVALID <= 0;
+            RLAST  <= 0;
+        end
+        else if (RVALID && RREADY) begin
+
+            RDATA <= mem[(read_addr >> 2) + read_count];
+
+            if (read_count == read_len) begin
+                RLAST <= 1;
+                RVALID <= 0;
+            end
+            else begin
+                read_count <= read_count + 1;
+            end
+        end
+        else if (RLAST) begin
+            RLAST <= 0;
+        end
+    end
+
+endmodule
+```
+
+---
+
+# 🎯 What This Slave Does
+
+### Write Burst
+
+* Stores base address
+* Accepts 4 beats
+* Increments memory index
+* Generates BVALID after last beat
+
+### Read Burst
+
+* Stores base address
+* Sends 4 beats
+* Generates RLAST correctly
+
+---
+
+# 🧠 What Is Missing (Professional View)
+
+This is simplified:
+
+❌ No burst type checking
+❌ No size checking
+❌ No error response
+❌ No outstanding support
+❌ No WRAP support
+
+But conceptually correct for learning.
+
+---
+
+# 🚀 Next Logical Step
+
+Now we should:
+
+A) Connect AXI4 master + slave and simulate
+B) Add WRAP4 burst support
+C) Add wait-state insertion
+D) Add protocol correctness improvements
+
+Correct progression is A.
+
+Confirm and we build full system.
+========================================================
+Perfect 😎🔥
+Now we build the **complete AXI4 system**:
+
+> ✅ AXI4 Master (INCR4)
+> ✅ AXI4 Slave (INCR4)
+> ✅ Top module connecting both
+
+After this, you officially understand full AXI4 burst flow.
+
+---
+
+# 🏗 AXI4 Top Module
+
+This connects master ↔ slave directly.
+
+---
+
+## ✅ `axi4_top.v`
+
+```verilog
+module axi4_top (
+
+    input  wire        ACLK,
+    input  wire        ARESETn,
+
+    input  wire        start_write,
+    input  wire        start_read,
+    input  wire [31:0] base_addr,
+    input  wire [31:0] write_data,
+
+    output wire        done
+);
+
+    //================ WRITE ADDRESS ==================
+    wire [31:0] AWADDR;
+    wire [7:0]  AWLEN;
+    wire [2:0]  AWSIZE;
+    wire [1:0]  AWBURST;
+    wire        AWVALID;
+    wire        AWREADY;
+
+    //================ WRITE DATA =====================
+    wire [31:0] WDATA;
+    wire        WVALID;
+    wire        WLAST;
+    wire        WREADY;
+
+    //================ WRITE RESPONSE =================
+    wire        BVALID;
+    wire        BREADY;
+
+    //================ READ ADDRESS ===================
+    wire [31:0] ARADDR;
+    wire [7:0]  ARLEN;
+    wire [2:0]  ARSIZE;
+    wire [1:0]  ARBURST;
+    wire        ARVALID;
+    wire        ARREADY;
+
+    //================ READ DATA ======================
+    wire [31:0] RDATA;
+    wire        RVALID;
+    wire        RLAST;
+    wire        RREADY;
+
+    //================ MASTER =========================
+
+    axi4_master_incr4 master_inst (
+        .ACLK(ACLK),
+        .ARESETn(ARESETn),
+
+        .start_write(start_write),
+        .start_read(start_read),
+        .base_addr(base_addr),
+        .write_data(write_data),
+        .done(done),
+
+        .AWADDR(AWADDR),
+        .AWLEN(AWLEN),
+        .AWSIZE(AWSIZE),
+        .AWBURST(AWBURST),
+        .AWVALID(AWVALID),
+        .AWREADY(AWREADY),
+
+        .WDATA(WDATA),
+        .WVALID(WVALID),
+        .WLAST(WLAST),
+        .WREADY(WREADY),
+
+        .BVALID(BVALID),
+        .BREADY(BREADY),
+
+        .ARADDR(ARADDR),
+        .ARLEN(ARLEN),
+        .ARSIZE(ARSIZE),
+        .ARBURST(ARBURST),
+        .ARVALID(ARVALID),
+        .ARREADY(ARREADY),
+
+        .RDATA(RDATA),
+        .RVALID(RVALID),
+        .RLAST(RLAST),
+        .RREADY(RREADY)
+    );
+
+    //================ SLAVE ==========================
+
+    axi4_slave_incr4 slave_inst (
+        .ACLK(ACLK),
+        .ARESETn(ARESETn),
+
+        .AWADDR(AWADDR),
+        .AWLEN(AWLEN),
+        .AWSIZE(AWSIZE),
+        .AWBURST(AWBURST),
+        .AWVALID(AWVALID),
+        .AWREADY(AWREADY),
+
+        .WDATA(WDATA),
+        .WVALID(WVALID),
+        .WLAST(WLAST),
+        .WREADY(WREADY),
+
+        .BVALID(BVALID),
+        .BREADY(BREADY),
+
+        .ARADDR(ARADDR),
+        .ARLEN(ARLEN),
+        .ARSIZE(ARSIZE),
+        .ARBURST(ARBURST),
+        .ARVALID(ARVALID),
+        .ARREADY(ARREADY),
+
+        .RDATA(RDATA),
+        .RVALID(RVALID),
+        .RLAST(RLAST),
+        .RREADY(RREADY)
+    );
+
+endmodule
+```
+
+---
+
+# 🧠 What Happens During WRITE (Waveform View)
+
+### Cycle 1–2
+
+```
+AWVALID → AWREADY handshake
+```
+
+### Next Cycles
+
+```
+WVALID → WREADY (4 times)
+Beat 0
+Beat 1
+Beat 2
+Beat 3 (WLAST=1)
+```
+
+### Final
+
+```
+BVALID → BREADY
+done = 1
+```
+
+---
+
+# 🧠 What Happens During READ
+
+### Address phase
+
+```
+ARVALID → ARREADY
+```
+
+### Data phase
+
+```
+RVALID → RREADY
+Beat 0
+Beat 1
+Beat 2
+Beat 3 (RLAST=1)
+done = 1
+```
+
+---
+
+# 🎯 You Now Have
+
+✔ Real AXI4 burst
+✔ Proper beat counting
+✔ WLAST generation
+✔ RLAST generation
+✔ Full handshake control
+✔ Working memory model
+
+This is not beginner level anymore.
+
+---
+
+# 🚀 Now Critical Question
+
+We must level up properly.
+
+What next?
+
+A) Add WRAP4 burst support
+B) Add wait-state insertion (realistic slave behavior)
+C) Add ID support + multiple outstanding
+D) Build AXI interconnect (2 masters, 2 slaves)
+
+Correct next step in professional order is B.
+
+What do you choose?
+========================================
+Excellent choice 👏🔥
+Now you’re moving from **functional AXI** to **realistic AXI**.
+
+Right now your slave is **zero-wait-state**:
+
+* AWREADY = immediate
+* WREADY = continuous
+* ARREADY = immediate
+* RVALID = continuous
+
+That is NOT how real hardware behaves.
+
+Now we add:
+
+> ✅ Configurable wait states
+> ✅ Delayed READY
+> ✅ Delayed RVALID
+> ✅ Proper backpressure behavior
+
+This is very important for interviews and real SoC design.
+
+---
+
+# 🧠 What Are Wait States?
+
+Wait state means:
+
+Slave intentionally delays handshake.
+
+Example:
+
+```
+Master: AWVALID = 1
+Slave:  AWREADY = 0 (stall)
+After 3 cycles → AWREADY = 1
+```
+
+This tests if master handles backpressure correctly.
+
+---
+
+# 🎯 What We Will Add
+
+We add two parameters:
+
+```verilog
+parameter WRITE_WAIT = 2;
+parameter READ_WAIT  = 3;
+```
+
+Meaning:
+
+* Slave waits 2 cycles before asserting WREADY
+* Slave waits 3 cycles before sending RVALID
+
+---
+
+# 🏗 Updated Slave With Wait States
+
+Only showing modified parts (clean version).
+
+---
+
+## 🔹 Add Counters
+
+```verilog
+reg [3:0] write_wait_cnt;
+reg [3:0] read_wait_cnt;
+```
+
+---
+
+## 🔹 WRITE WAIT LOGIC
+
+Replace WREADY logic with:
+
+```verilog
+always @(posedge ACLK or negedge ARESETn) begin
+    if (!ARESETn) begin
+        WREADY <= 0;
+        write_wait_cnt <= 0;
+    end
+    else if (AWVALID && AWREADY) begin
+        write_wait_cnt <= WRITE_WAIT;
+    end
+    else if (write_wait_cnt != 0) begin
+        write_wait_cnt <= write_wait_cnt - 1;
+        WREADY <= 0;
+    end
+    else begin
+        WREADY <= 1;
+    end
+end
+```
+
+Now WREADY comes after delay.
+
+---
+
+## 🔹 READ WAIT LOGIC
+
+Modify AR capture:
+
+```verilog
+always @(posedge ACLK) begin
+    if (ARVALID && ARREADY) begin
+        read_addr  <= ARADDR;
+        read_len   <= ARLEN;
+        read_count <= 0;
+        read_wait_cnt <= READ_WAIT;
+        RVALID <= 0;
+    end
+end
+```
+
+---
+
+Then modify RVALID generation:
+
+```verilog
+always @(posedge ACLK or negedge ARESETn) begin
+    if (!ARESETn) begin
+        RVALID <= 0;
+        RLAST  <= 0;
+    end
+    else if (read_wait_cnt != 0) begin
+        read_wait_cnt <= read_wait_cnt - 1;
+    end
+    else if (!RVALID) begin
+        RVALID <= 1;
+        RDATA  <= mem[(read_addr >> 2) + read_count];
+    end
+    else if (RVALID && RREADY) begin
+        if (read_count == read_len) begin
+            RLAST  <= 1;
+            RVALID <= 0;
+        end
+        else begin
+            read_count <= read_count + 1;
+            RDATA <= mem[(read_addr >> 2) + read_count + 1];
+        end
+    end
+end
+```
+
+---
+
+# 🧠 What Happens Now
+
+### WRITE
+
+```
+AW handshake
+Slave waits 2 cycles
+Then WREADY = 1
+```
+
+### READ
+
+```
+AR handshake
+Slave waits 3 cycles
+Then RVALID starts
+```
+
+Now master must handle stalls correctly.
+
+---
+
+# 🔥 Why This Is Important
+
+In real hardware:
+
+* Memory has latency
+* Interconnect adds delay
+* DDR controller delays response
+* Arbitration causes stalls
+
+If your master cannot handle wait states → design is broken.
+
+---
+
+# 🧠 Interview Question They Ask
+
+"What happens if READY is low for 5 cycles?"
+
+Correct answer:
+
+"Master must hold VALID high until READY is asserted."
+
+You now understand that fully.
+
+---
+
+# 🚀 Next Professional Step
+
+Now that system supports wait states:
+
+We should test robustness.
+
+Choose:
+
+A) Random wait-state generator
+B) Add WRAP4 burst support
+C) Add multiple outstanding transactions
+D) Build AXI protocol checker
+
+Correct professional path is A.
+
+What do you choose?
+=============================================
+Excellent 😎🔥
+Now we are entering **verification-level AXI design**.
+
+Static wait states (fixed 2 or 3 cycles) are easy.
+
+Real hardware behaves like this:
+
+```
+Sometimes 0 wait
+Sometimes 3 wait
+Sometimes 7 wait
+Sometimes stall in middle of burst
+```
+
+That’s what breaks weak masters.
+
+So now we add:
+
+> ✅ Random wait-state generator
+> ✅ Random backpressure on WREADY
+> ✅ Random backpressure on RVALID
+> ✅ Burst stall in middle
+
+This is how real verification is done.
+
+---
+
+# 🧠 Design Goal
+
+We modify slave so that:
+
+* AWREADY randomly delayed
+* WREADY randomly stalls
+* ARREADY randomly delayed
+* RVALID randomly stalls between beats
+
+Master must survive all of this.
+
+---
+
+# 🎯 Step 1 — Add Random Generator
+
+In simulation, we can use `$urandom`.
+
+Add:
+
+```verilog
+integer rand_delay;
+```
+
+---
+
+# 🔹 Random AWREADY
+
+Replace AWREADY logic:
+
+```verilog
+always @(posedge ACLK or negedge ARESETn) begin
+    if (!ARESETn)
+        AWREADY <= 0;
+    else begin
+        rand_delay = $urandom % 4;   // 0 to 3 cycles
+
+        if (AWVALID && rand_delay == 0)
+            AWREADY <= 1;
+        else
+            AWREADY <= 0;
+    end
+end
+```
+
+Now address sometimes stalls.
+
+---
+
+# 🔹 Random WREADY (Most Important)
+
+```verilog
+always @(posedge ACLK or negedge ARESETn) begin
+    if (!ARESETn)
+        WREADY <= 0;
+    else begin
+        rand_delay = $urandom % 3;
+
+        if (rand_delay == 0)
+            WREADY <= 1;
+        else
+            WREADY <= 0;
+    end
+end
+```
+
+Now write data can stall ANY beat.
+
+This is critical.
+
+---
+
+# 🔹 Random ARREADY
+
+```verilog
+always @(posedge ACLK or negedge ARESETn) begin
+    if (!ARESETn)
+        ARREADY <= 0;
+    else begin
+        rand_delay = $urandom % 3;
+
+        if (ARVALID && rand_delay == 0)
+            ARREADY <= 1;
+        else
+            ARREADY <= 0;
+    end
+end
+```
+
+---
+
+# 🔹 Random RVALID (Hardest Part)
+
+```verilog
+always @(posedge ACLK or negedge ARESETn) begin
+    if (!ARESETn) begin
+        RVALID <= 0;
+        RLAST  <= 0;
+    end
+    else begin
+        rand_delay = $urandom % 3;
+
+        if (rand_delay == 0 && read_count <= read_len) begin
+            RVALID <= 1;
+            RDATA  <= mem[(read_addr >> 2) + read_count];
+
+            if (read_count == read_len)
+                RLAST <= 1;
+        end
+        else if (RVALID && RREADY) begin
+            read_count <= read_count + 1;
+            RVALID <= 0;
+            RLAST  <= 0;
+        end
+    end
+end
+```
+
+Now read can stall between beats.
+
+---
+
+# 🧠 What This Tests
+
+Your master must:
+
+✔ Hold AWVALID until AWREADY
+✔ Hold WVALID until WREADY
+✔ Not assume continuous WREADY
+✔ Hold ARVALID until ARREADY
+✔ Keep RREADY asserted until RLAST
+
+If master fails → waveform will break.
+
+---
+
+# 🔥 This Is Real AXI Behavior
+
+In real SoC:
+
+* DDR randomly stalls
+* Interconnect arbitration stalls
+* Cache controller stalls
+* Bus congestion stalls
+
+This random behavior is normal.
+
+---
+
+# 🚨 Important Professional Note
+
+This random code is for simulation only.
+
+In synthesis:
+
+* `$urandom` is illegal
+* Random delays are verification logic only
+
+In real hardware, delays come from:
+
+* Memory latency
+* FIFO full
+* Arbitration logic
+
+---
+
+# 🎯 Now Big Question
+
+Now that your slave is brutal and random:
+
+Do you want to:
+
+A) Verify master robustness (waveform analysis training)
+B) Upgrade master to support multiple outstanding
+C) Add WRAP burst
+D) Build full AXI Interconnect
+
+The correct professional next step is A. I HAVE CHOSEN C
+
+What do you choose? 😎
+==========================================================
+Good 😎🔥
+Now we level up the protocol understanding.
+
+You already have:
+
+* ✅ INCR burst
+* ✅ Wait states
+* ✅ Random stalls
+
+Now we add:
+
+> 🔥 WRAP burst support (WRAP4)
+
+This is where many engineers get confused.
+
+So go slow.
+
+---
+
+# 🧠 First — What Is WRAP Burst?
+
+WRAP means:
+
+> Address increments like INCR
+> BUT wraps around inside a fixed boundary
+
+Boundary size:
+
+```
+Boundary = (Burst Length) × (Bytes per beat)
+```
+
+---
+
+# 🎯 Example: WRAP4, 4 bytes per beat
+
+```
+AWSIZE = 2  → 4 bytes
+AWLEN  = 3  → 4 beats
+```
+
+Boundary:
+
+```
+4 beats × 4 bytes = 16 bytes
+```
+
+So address wraps inside 16-byte aligned region.
+
+---
+
+# 🧠 Example 1
+
+Start address:
+
+```
+0x1000
+```
+
+Sequence:
+
+```
+0x1000
+0x1004
+0x1008
+0x100C
+```
+
+Same as INCR.
+
+---
+
+# 🧠 Example 2 (Important)
+
+Start address:
+
+```
+0x100C
+```
+
+Sequence:
+
+```
+0x100C
+0x1000
+0x1004
+0x1008
+```
+
+See the wrap?
+
+---
+
+# 🧮 How To Compute Wrap Address
+
+### Step 1 — Calculate boundary size
+
+```verilog
+wrap_size = (AWLEN + 1) << AWSIZE;
+```
+
+### Step 2 — Calculate wrap base
+
+```verilog
+wrap_base = (AWADDR / wrap_size) * wrap_size;
+```
+
+### Step 3 — Next address logic
+
+```verilog
+next_addr = current_addr + (1 << AWSIZE);
+
+if (next_addr >= wrap_base + wrap_size)
+    next_addr = wrap_base;
+```
+
+That is the full WRAP logic.
+
+---
+
+# 🔥 Now Modify Slave Address Calculation
+
+Previously for INCR we did:
+
+```verilog
+mem[(write_addr >> 2) + write_count]
+```
+
+Now we must calculate dynamic address.
+
+---
+
+# 🏗 Modify Write Address Logic
+
+Add registers:
+
+```verilog
+reg [31:0] curr_write_addr;
+reg [31:0] wrap_base;
+reg [31:0] wrap_size;
+```
+
+---
+
+### Capture AW:
+
+```verilog
+always @(posedge ACLK) begin
+    if (AWVALID && AWREADY) begin
+        curr_write_addr <= AWADDR;
+
+        wrap_size <= (AWLEN + 1) << AWSIZE;
+        wrap_base <= (AWADDR / wrap_size) * wrap_size;
+
+        write_len   <= AWLEN;
+        write_count <= 0;
+    end
+end
+```
+
+---
+
+### Modify Write Data Section
+
+Replace memory write block:
+
+```verilog
+always @(posedge ACLK) begin
+    if (WVALID && WREADY) begin
+
+        mem[curr_write_addr >> 2] <= WDATA;
+
+        write_count <= write_count + 1;
+
+        // Address update
+        if (AWBURST == 2'b01) begin
+            // INCR
+            curr_write_addr <= curr_write_addr + (1 << AWSIZE);
+        end
+        else if (AWBURST == 2'b10) begin
+            // WRAP
+            if (curr_write_addr + (1 << AWSIZE) >= wrap_base + wrap_size)
+                curr_write_addr <= wrap_base;
+            else
+                curr_write_addr <= curr_write_addr + (1 << AWSIZE);
+        end
+    end
+end
+```
+
+---
+
+# 🏗 Modify Read Address Logic (Same Concept)
+
+Add:
+
+```verilog
+reg [31:0] curr_read_addr;
+reg [31:0] read_wrap_base;
+reg [31:0] read_wrap_size;
+```
+
+Capture AR:
+
+```verilog
+always @(posedge ACLK) begin
+    if (ARVALID && ARREADY) begin
+        curr_read_addr <= ARADDR;
+
+        read_wrap_size <= (ARLEN + 1) << ARSIZE;
+        read_wrap_base <= (ARADDR / read_wrap_size) * read_wrap_size;
+
+        read_len   <= ARLEN;
+        read_count <= 0;
+    end
+end
+```
+
+Modify RDATA generation:
+
+```verilog
+if (RVALID && RREADY) begin
+
+    if (read_count == read_len)
+        RLAST <= 1;
+
+    read_count <= read_count + 1;
+
+    if (ARBURST == 2'b01) begin
+        curr_read_addr <= curr_read_addr + (1 << ARSIZE);
+    end
+    else if (ARBURST == 2'b10) begin
+        if (curr_read_addr + (1 << ARSIZE) >= read_wrap_base + read_wrap_size)
+            curr_read_addr <= read_wrap_base;
+        else
+            curr_read_addr <= curr_read_addr + (1 << ARSIZE);
+    end
+end
+```
+
+---
+
+# 🎯 Now Slave Supports
+
+| Burst Type | Supported |
+| ---------- | --------- |
+| FIXED      | ❌         |
+| INCR       | ✅         |
+| WRAP       | ✅         |
+
+---
+
+# 🧠 Important Interview Question
+
+They ask:
+
+> Why WRAP is needed?
+
+Correct answer:
+
+WRAP burst is used in cache line fills.
+
+Cache line size = burst boundary.
+
+Wrap ensures cache line aligned fetch.
+
+You now understand cache-level AXI behavior.
+
+---
+
+# 🚀 Next Level
+
+Now you officially understand:
+
+* INCR
+* WRAP
+* Wait states
+* Burst
+* RLAST/WLAST
+
+You are already beyond most freshers.
+
+Now real difficulty begins.
+
+Next serious step:
+
+A) Add multiple outstanding (ID support)
+B) Build AXI interconnect
+C) Add protocol checker
+D) Move to AXI + Cache system
+
+Correct professional path is A.
+
+What do you choose? 😎
+========================================================
+Excellent. Now you’re stepping into **real AXI4 complexity**. 🔥
+
+Up to now, your system was:
+
+* Single outstanding transaction
+* No IDs
+* One burst at a time
+
+Now we move to:
+
+> ✅ Multiple Outstanding Transactions
+> ✅ ID-based ordering
+> ✅ Out-of-order completion (slave side)
+
+This is where AXI becomes powerful.
+
+---
+
+# 🧠 What “Multiple Outstanding” Means
+
+In AXI4:
+
+A master can issue:
+
+```
+AW (ID=1)
+AW (ID=2)
+AW (ID=3)
+```
+
+Without waiting for:
+
+```
+B (ID=1)
+```
+
+Same for reads:
+
+```
+AR (ID=5)
+AR (ID=6)
+```
+
+Before receiving any RDATA.
+
+This increases performance massively.
+
+---
+
+# 🚨 Why IDs Are Required
+
+If slave completes out of order:
+
+```
+Request AR ID=5
+Request AR ID=6
+
+Slave finishes ID=6 first
+Then finishes ID=5
+```
+
+Without ID → impossible to match response.
+
+With ID:
+
+```
+RID = 6
+RID = 5
+```
+
+Master knows which is which.
+
+---
+
+# 🔥 New Signals Added
+
+### Write Address Channel
+
+```
+AWID
+```
+
+### Write Response Channel
+
+```
+BID
+```
+
+### Read Address Channel
+
+```
+ARID
+```
+
+### Read Data Channel
+
+```
+RID
+```
+
+---
+
+# 🎯 Design Strategy (Learning Version)
+
+We will:
+
+* Support 2 outstanding transactions
+* Use 2-bit ID
+* Store pending transactions in small queue
+* Allow slave to respond out-of-order (randomly)
+
+Keep it simple but realistic.
+
+---
+
+# 🏗 Step 1 — Add ID to Master
+
+Modify master ports:
+
+```verilog
+output reg [1:0] AWID,
+output reg [1:0] ARID,
+input  wire [1:0] BID,
+input  wire [1:0] RID,
+```
+
+---
+
+# 🧠 Master Behavior
+
+Instead of:
+
+```
+Wait for BVALID before issuing next AW
+```
+
+We now allow:
+
+```
+Issue next AW immediately
+```
+
+We maintain:
+
+```
+outstanding_write_count
+outstanding_read_count
+```
+
+---
+
+# 🏗 Simple Master Logic Concept
+
+```
+if (start_write && outstanding_write_count < 2)
+    issue AW with new ID
+    outstanding_write_count++
+
+if (BVALID)
+    outstanding_write_count--
+```
+
+Same for read using RID.
+
+---
+
+# 🏗 Slave Modification Concept
+
+Slave must:
+
+* Store incoming AWID
+* Associate it with burst
+* Return BID = stored ID
+* Same for ARID → RID
+
+For multiple outstanding reads:
+
+Slave must maintain small FIFO:
+
+```
+struct read_request {
+    ID
+    base_addr
+    length
+}
+```
+
+Then process them (possibly out-of-order).
+
+---
+
+# 🧠 Minimal Educational Version
+
+We implement:
+
+* 2-entry request buffer
+* Simple round-robin completion
+* Random completion order
+
+---
+
+# 🎯 Important Professional Concept
+
+AXI ordering rules:
+
+✔ Writes with same ID must complete in order
+✔ Reads with same ID must complete in order
+✔ Different IDs may complete out-of-order
+
+This is critical.
+
+---
+
+# ⚠ Complexity Warning
+
+Multiple outstanding adds:
+
+* Request tracking
+* ID matching
+* Separate state machines per transaction
+* Arbitration inside slave
+* Reordering logic
+
+This is no longer beginner RTL.
+
+---
+
+# 🚀 Before Writing Code
+
+We must choose learning depth.
+
+Option 1 — Educational Simplified Version
+
+* 2 outstanding max
+* No out-of-order
+* Just ID tagging
+
+Option 2 — Realistic Version
+
+* Out-of-order completion
+* Small request queue
+* Proper ID routing
+
+Option 3 — Full professional design
+
+* Reorder buffer
+* Separate read/write engines
+* Transaction tracker
+
+---
+
+Correct learning progression is:
+
+👉 Option 1 first
+👉 Then Option 2
+
+What do you choose?
+====================================================
+Excellent. 👍
+You chose the **correct learning progression**.
+
+We now implement:
+
+> ✅ Multiple Outstanding (Max 2)
+> ✅ ID tagging
+> ❌ No out-of-order completion
+> ❌ No reorder buffer
+
+This keeps it clean and educational.
+
+---
+
+# 🧠 What We Are Adding
+
+Previously:
+
+* Master waited for BVALID before issuing next write.
+* Master waited for RLAST before issuing next read.
+
+Now:
+
+* Master can issue 2 write bursts without waiting.
+* Master can issue 2 read bursts without waiting.
+* Slave completes in order.
+* IDs are used but responses are still ordered.
+
+---
+
+# 🔥 Step 1 — Add ID Signals
+
+### Master New Ports
+
+```verilog
+output reg [1:0] AWID,
+output reg [1:0] ARID,
+input  wire [1:0] BID,
+input  wire [1:0] RID,
+```
+
+### Slave New Ports
+
+```verilog
+input  wire [1:0] AWID,
+output reg  [1:0] BID,
+
+input  wire [1:0] ARID,
+output reg  [1:0] RID,
+```
+
+---
+
+# 🧠 Step 2 — Master Outstanding Counters
+
+Add:
+
+```verilog
+reg [1:0] write_id_counter;
+reg [1:0] read_id_counter;
+
+reg [1:0] outstanding_write;
+reg [1:0] outstanding_read;
+```
+
+---
+
+# 🏗 Write Address Issue Logic (Modified)
+
+In IDLE state:
+
+```verilog
+if (start_write && outstanding_write < 2) begin
+    AWADDR  <= base_addr;
+    AWLEN   <= 3;
+    AWSIZE  <= 2;
+    AWBURST <= 2'b01;
+
+    AWID    <= write_id_counter;
+
+    write_id_counter <= write_id_counter + 1;
+    outstanding_write <= outstanding_write + 1;
+
+    AWVALID <= 1;
+    state   <= WRITE_ADDR;
+end
+```
+
+---
+
+# 🏗 Write Response Handling
+
+In WRITE_RESP:
+
+```verilog
+if (BVALID) begin
+    outstanding_write <= outstanding_write - 1;
+    BREADY <= 1;
+end
+```
+
+Important:
+
+We do NOT check BID because we assume ordered completion.
+
+But we *could* verify:
+
+```verilog
+if (BID == expected_id)
+```
+
+---
+
+# 🏗 Read Address Issue Logic
+
+```verilog
+if (start_read && outstanding_read < 2) begin
+    ARADDR  <= base_addr;
+    ARLEN   <= 3;
+    ARSIZE  <= 2;
+    ARBURST <= 2'b01;
+
+    ARID    <= read_id_counter;
+
+    read_id_counter <= read_id_counter + 1;
+    outstanding_read <= outstanding_read + 1;
+
+    ARVALID <= 1;
+    state   <= READ_ADDR;
+end
+```
+
+---
+
+# 🏗 Read Completion Handling
+
+In READ_DATA:
+
+```verilog
+if (RVALID && RREADY && RLAST) begin
+    outstanding_read <= outstanding_read - 1;
+end
+```
+
+We can also verify:
+
+```verilog
+if (RID == expected_id)
+```
+
+---
+
+# 🏗 Slave Modification
+
+Slave must:
+
+Store ID when request comes.
+
+### Capture Write ID
+
+```verilog
+reg [1:0] current_write_id;
+
+always @(posedge ACLK) begin
+    if (AWVALID && AWREADY) begin
+        current_write_id <= AWID;
+    end
+end
+```
+
+### Return ID on Response
+
+```verilog
+always @(posedge ACLK) begin
+    if (WLAST && WVALID && WREADY) begin
+        BVALID <= 1;
+        BID    <= current_write_id;
+    end
+end
+```
+
+---
+
+### Capture Read ID
+
+```verilog
+reg [1:0] current_read_id;
+
+always @(posedge ACLK) begin
+    if (ARVALID && ARREADY) begin
+        current_read_id <= ARID;
+    end
+end
+```
+
+### Return RID
+
+```verilog
+if (RVALID) begin
+    RID <= current_read_id;
+end
+```
+
+---
+
+# 🎯 What You Achieved
+
+Now your system supports:
+
+| Feature                  | Supported |
+| ------------------------ | --------- |
+| Burst                    | ✅         |
+| WRAP                     | ✅         |
+| Wait states              | ✅         |
+| Random stalls            | ✅         |
+| Multiple outstanding (2) | ✅         |
+| ID tagging               | ✅         |
+| Out-of-order             | ❌         |
+
+You are now at **upper-intermediate AXI level**.
+
+---
+
+# 🧠 Why This Matters
+
+In real SoC:
+
+CPU issues:
+
+```
+Read cache line A
+Read cache line B
+Read cache line C
+```
+
+Without waiting for each.
+
+That is exactly multiple outstanding.
+
+---
+
+# 🚀 Next Step
+
+Now the real turning point:
+
+A) Allow out-of-order completion
+B) Build small reorder buffer
+C) Build 2-master 1-slave interconnect
+D) Move toward AXI + cache architecture
+
+Correct next serious progression is A.
+
+What do you choose? 😎
+======================================================
+Excellent. 🔥
+Now you’re entering **real AXI territory**.
+
+We move from:
+
+> Ordered completion
+> to
+> ✅ Out-of-order completion (different IDs)
+
+This is where AXI becomes powerful.
+
+---
+
+# 🧠 First — Understand the Rule
+
+AXI ordering rules:
+
+✔ Same ID → must complete in order
+✔ Different IDs → may complete out-of-order
+
+Example:
+
+Master issues:
+
+```
+AR ID=0  (Address A)
+AR ID=1  (Address B)
+```
+
+Slave is allowed to respond:
+
+```
+RID=1  (Address B first)
+RID=0  (Address A later)
+```
+
+That is legal AXI.
+
+---
+
+# 🎯 What We Will Implement
+
+Educational version:
+
+* Max 2 outstanding reads
+* Slave stores 2 requests
+* Slave randomly chooses which one to serve first
+* Master accepts any RID
+* No reorder buffer needed (because IDs tell us which is which)
+
+We’ll do READ channel first (simpler).
+
+---
+
+# 🏗 Step 1 — Slave: Store 2 Read Requests
+
+Create small request buffer:
+
+```verilog
+reg        req_valid [0:1];
+reg [1:0]  req_id    [0:1];
+reg [31:0] req_addr  [0:1];
+reg [7:0]  req_len   [0:1];
+```
+
+Add pointer:
+
+```verilog
+reg [0:0] write_ptr;
+```
+
+---
+
+## Capture AR requests
+
+```verilog
+always @(posedge ACLK) begin
+    if (!ARESETN) begin
+        req_valid[0] <= 0;
+        req_valid[1] <= 0;
+    end
+    else if (ARVALID && ARREADY) begin
+        req_valid[write_ptr] <= 1;
+        req_id[write_ptr]    <= ARID;
+        req_addr[write_ptr]  <= ARADDR;
+        req_len[write_ptr]   <= ARLEN;
+
+        write_ptr <= write_ptr + 1;
+    end
+end
+```
+
+ARREADY should be 1 if any slot is free:
+
+```verilog
+assign ARREADY = !(req_valid[0] && req_valid[1]);
+```
+
+---
+
+# 🧠 Step 2 — Choose Which Request to Serve
+
+We create a selector:
+
+```verilog
+reg serve_index;
+```
+
+When idle:
+
+```verilog
+if (req_valid[0] && req_valid[1])
+    serve_index <= $random % 2;   // choose randomly
+else if (req_valid[0])
+    serve_index <= 0;
+else if (req_valid[1])
+    serve_index <= 1;
+```
+
+This creates out-of-order behavior.
+
+---
+
+# 🏗 Step 3 — Start Read Burst From Selected Slot
+
+Load working registers:
+
+```verilog
+current_id   <= req_id[serve_index];
+current_addr <= req_addr[serve_index];
+current_len  <= req_len[serve_index];
+
+req_valid[serve_index] <= 0;
+```
+
+---
+
+# 🏗 Step 4 — Send Data with RID
+
+During data phase:
+
+```verilog
+RVALID <= 1;
+RID    <= current_id;
+RDATA  <= memory[current_addr];
+```
+
+Last beat:
+
+```verilog
+if (beat_count == current_len) begin
+    RLAST <= 1;
+end
+```
+
+Now responses may return:
+
+```
+RID=1 first
+RID=0 later
+```
+
+This is legal AXI.
+
+---
+
+# 🧠 Master Side — What Changes?
+
+Almost nothing.
+
+Because:
+
+RID tells master which transaction completed.
+
+Master must NOT assume ordering.
+
+Instead of:
+
+```verilog
+if (RLAST)
+    outstanding_read--
+```
+
+We keep:
+
+```verilog
+if (RVALID && RREADY && RLAST)
+    outstanding_read <= outstanding_read - 1;
+```
+
+We do not care about order.
+
+IDs handle it.
+
+---
+
+# 🔥 What You Just Built
+
+Now your design supports:
+
+| Feature                  | Status |
+| ------------------------ | ------ |
+| Multiple outstanding     | ✅      |
+| ID tagging               | ✅      |
+| Out-of-order reads       | ✅      |
+| AXI legal ordering rules | ✅      |
+
+This is real AXI4 behavior.
+
+---
+
+# 🚨 Important Concept
+
+Why same ID must stay ordered?
+
+Because master may depend on sequence:
+
+```
+AR ID=3 (addr A)
+AR ID=3 (addr B)
+```
+
+Second read may depend on first.
+
+So AXI enforces ordering per ID.
+
+---
+
+# 🧠 What Happens in Real SoC
+
+CPU uses:
+
+* ID=0 for cache misses
+* ID=1 for prefetch
+* ID=2 for DMA
+
+Memory controller reorders for efficiency.
+
+That’s exactly what you just simulated.
+
+---
+
+# 🚀 Next Evolution Options
+
+Now you are at advanced AXI.
+
+Next logical steps:
+
+A) Add out-of-order for writes
+B) Add reorder buffer in master
+C) Build AXI interconnect (2 masters → 1 slave)
+D) Move toward cache + AXI memory system
+
+Correct professional progression:
+👉 C (Interconnect)
+
+What do you choose? 😎
+Excellent. 🔥
+Now you are entering **SoC-level design**.
+
+We are building:
+
+> ✅ 2 Masters
+> ✅ 1 Slave
+> ✅ AXI4 Interconnect
+> ✅ Arbitration
+> ✅ ID forwarding
+
+This is how real systems connect CPU + DMA to memory.
+
+---
+
+# 🧠 Big Picture Architecture
+
+```
+        MASTER 0 (CPU)
+                |
+                |
+        MASTER 1 (DMA)
+                |
+                |
+          AXI INTERCONNECT
+                |
+                |
+             SLAVE (Memory)
+```
+
+The interconnect must:
+
+1. Arbitrate between masters
+2. Forward selected master signals to slave
+3. Route responses back to correct master
+4. Preserve AXI ordering rules
+
+---
+
+# 🎯 We Start Simple
+
+Educational version:
+
+* Single shared slave
+* Fixed priority arbitration (M0 > M1)
+* One transaction at a time (no interleave)
+* ID passed through unchanged
+
+Then we upgrade.
+
+---
+
+# 🏗 Step 1 — Arbitration (Read Address Channel)
+
+We check:
+
+```verilog
+if (M0_ARVALID)
+    grant M0;
+else if (M1_ARVALID)
+    grant M1;
+```
+
+Simple priority.
+
+---
+
+# 🏗 Step 2 — Forward Signals
+
+If M0 granted:
+
+```verilog
+S_ARVALID = M0_ARVALID;
+S_ARADDR  = M0_ARADDR;
+S_ARID    = M0_ARID;
+```
+
+If M1 granted:
+
+```verilog
+S_ARVALID = M1_ARVALID;
+S_ARADDR  = M1_ARADDR;
+S_ARID    = {1'b1, M1_ARID}; 
+```
+
+⚠ IMPORTANT
+
+We modify ID to include master number.
+
+Example:
+
+```
+MSB = master number
+LSB = original ID
+```
+
+So slave can return response properly.
+
+This is how real interconnects work.
+
+---
+
+# 🧠 Why Modify ID?
+
+Because both masters might use ID=0.
+
+Without modification:
+
+```
+M0 sends ID=0
+M1 sends ID=0
+```
+
+Slave cannot distinguish.
+
+So interconnect makes:
+
+```
+M0 ID=0 → 2'b00
+M1 ID=0 → 2'b10
+```
+
+MSB = master select.
+
+---
+
+# 🏗 Step 3 — Route Read Data Back
+
+When slave responds:
+
+```verilog
+if (S_RVALID) begin
+    if (S_RID[1] == 0)
+        route to M0
+    else
+        route to M1
+end
+```
+
+And strip MSB before returning:
+
+```verilog
+M0_RID = S_RID[0];
+M1_RID = S_RID[0];
+```
+
+---
+
+# 🏗 Interconnect Read Address Logic (Simplified)
+
+```verilog
+always @(*) begin
+    if (M0_ARVALID) begin
+        grant = 0;
+    end else if (M1_ARVALID) begin
+        grant = 1;
+    end
+end
+
+assign S_ARVALID = (grant == 0) ? M0_ARVALID : M1_ARVALID;
+assign S_ARADDR  = (grant == 0) ? M0_ARADDR  : M1_ARADDR;
+assign S_ARID    = (grant == 0) ? {1'b0, M0_ARID}
+                                : {1'b1, M1_ARID};
+
+assign M0_ARREADY = (grant == 0) ? S_ARREADY : 0;
+assign M1_ARREADY = (grant == 1) ? S_ARREADY : 0;
+```
+
+---
+
+# 🏗 Read Data Routing
+
+```verilog
+assign M0_RVALID = S_RVALID && (S_RID[1] == 0);
+assign M1_RVALID = S_RVALID && (S_RID[1] == 1);
+
+assign M0_RDATA  = S_RDATA;
+assign M1_RDATA  = S_RDATA;
+
+assign M0_RID    = S_RID[0];
+assign M1_RID    = S_RID[0];
+
+assign S_RREADY  = (S_RID[1] == 0) ? M0_RREADY : M1_RREADY;
+```
+
+---
+
+# 🎯 What You Just Built
+
+You now understand:
+
+* Arbitration
+* ID extension
+* Response routing
+* Basic interconnect fabric
+
+This is the foundation of:
+
+* ARM NIC
+* Xilinx AXI Interconnect
+* NoC routers
+
+---
+
+# 🚀 Next Evolution Levels
+
+Now you are officially beyond beginner AXI.
+
+Next professional options:
+
+A) Add write channel arbitration
+B) Add round-robin arbitration
+C) Allow both masters to issue simultaneously
+D) Build full 5-channel interconnect
+
+Correct next progression:
+
+👉 D (Full 5-channel interconnect)
+
+Because AXI has 5 independent channels.
+
+What do you choose? 😎
+================================
+Excellent. 🔥
+Now you are entering **SoC-level design**.
+
+We are building:
+
+> ✅ 2 Masters
+> ✅ 1 Slave
+> ✅ AXI4 Interconnect
+> ✅ Arbitration
+> ✅ ID forwarding
+
+This is how real systems connect CPU + DMA to memory.
+
+---
+
+# 🧠 Big Picture Architecture
+
+```
+        MASTER 0 (CPU)
+                |
+                |
+        MASTER 1 (DMA)
+                |
+                |
+          AXI INTERCONNECT
+                |
+                |
+             SLAVE (Memory)
+```
+
+The interconnect must:
+
+1. Arbitrate between masters
+2. Forward selected master signals to slave
+3. Route responses back to correct master
+4. Preserve AXI ordering rules
+
+---
+
+# 🎯 We Start Simple
+
+Educational version:
+
+* Single shared slave
+* Fixed priority arbitration (M0 > M1)
+* One transaction at a time (no interleave)
+* ID passed through unchanged
+
+Then we upgrade.
+
+---
+
+# 🏗 Step 1 — Arbitration (Read Address Channel)
+
+We check:
+
+```verilog
+if (M0_ARVALID)
+    grant M0;
+else if (M1_ARVALID)
+    grant M1;
+```
+
+Simple priority.
+
+---
+
+# 🏗 Step 2 — Forward Signals
+
+If M0 granted:
+
+```verilog
+S_ARVALID = M0_ARVALID;
+S_ARADDR  = M0_ARADDR;
+S_ARID    = M0_ARID;
+```
+
+If M1 granted:
+
+```verilog
+S_ARVALID = M1_ARVALID;
+S_ARADDR  = M1_ARADDR;
+S_ARID    = {1'b1, M1_ARID}; 
+```
+
+⚠ IMPORTANT
+
+We modify ID to include master number.
+
+Example:
+
+```
+MSB = master number
+LSB = original ID
+```
+
+So slave can return response properly.
+
+This is how real interconnects work.
+
+---
+
+# 🧠 Why Modify ID?
+
+Because both masters might use ID=0.
+
+Without modification:
+
+```
+M0 sends ID=0
+M1 sends ID=0
+```
+
+Slave cannot distinguish.
+
+So interconnect makes:
+
+```
+M0 ID=0 → 2'b00
+M1 ID=0 → 2'b10
+```
+
+MSB = master select.
+
+---
+
+# 🏗 Step 3 — Route Read Data Back
+
+When slave responds:
+
+```verilog
+if (S_RVALID) begin
+    if (S_RID[1] == 0)
+        route to M0
+    else
+        route to M1
+end
+```
+
+And strip MSB before returning:
+
+```verilog
+M0_RID = S_RID[0];
+M1_RID = S_RID[0];
+```
+
+---
+
+# 🏗 Interconnect Read Address Logic (Simplified)
+
+```verilog
+always @(*) begin
+    if (M0_ARVALID) begin
+        grant = 0;
+    end else if (M1_ARVALID) begin
+        grant = 1;
+    end
+end
+
+assign S_ARVALID = (grant == 0) ? M0_ARVALID : M1_ARVALID;
+assign S_ARADDR  = (grant == 0) ? M0_ARADDR  : M1_ARADDR;
+assign S_ARID    = (grant == 0) ? {1'b0, M0_ARID}
+                                : {1'b1, M1_ARID};
+
+assign M0_ARREADY = (grant == 0) ? S_ARREADY : 0;
+assign M1_ARREADY = (grant == 1) ? S_ARREADY : 0;
+```
+
+---
+
+# 🏗 Read Data Routing
+
+```verilog
+assign M0_RVALID = S_RVALID && (S_RID[1] == 0);
+assign M1_RVALID = S_RVALID && (S_RID[1] == 1);
+
+assign M0_RDATA  = S_RDATA;
+assign M1_RDATA  = S_RDATA;
+
+assign M0_RID    = S_RID[0];
+assign M1_RID    = S_RID[0];
+
+assign S_RREADY  = (S_RID[1] == 0) ? M0_RREADY : M1_RREADY;
+```
+
+---
+
+# 🎯 What You Just Built
+
+You now understand:
+
+* Arbitration
+* ID extension
+* Response routing
+* Basic interconnect fabric
+
+This is the foundation of:
+
+* ARM NIC
+* Xilinx AXI Interconnect
+* NoC routers
+
+---
+
+# 🚀 Next Evolution Levels
+
+Now you are officially beyond beginner AXI.
+
+Next professional options:
+
+A) Add write channel arbitration
+B) Add round-robin arbitration
+C) Allow both masters to issue simultaneously
+D) Build full 5-channel interconnect
+
+Correct next progression:
+
+👉 D (Full 5-channel interconnect)
+
+Because AXI has 5 independent channels.
+
+What do you choose? 😎
+=============================================
