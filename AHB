@@ -587,3 +587,228 @@ module tb_ahb;
     $stop;
   end
 endmodule
+================================================================
+1️⃣ Fixed 2-cycle wait state
+2️⃣ Random wait state generator
+HREADYOUT = 0
+That means:
+
+Current transfer not complete
+
+Master must HOLD:
+
+HADDR
+
+HTRANS
+
+HWRITE
+
+HBURST
+
+Counter must NOT increment
+================================================================
+module slave_ahb (
+
+    input  wire        HCLK,
+    input  wire        HRESETn,
+
+    input  wire [31:0] HADDR,
+    input  wire [1:0]  HTRANS,
+    input  wire        HWRITE,
+    input  wire [2:0]  HSIZE,
+    input  wire [2:0]  HBURST,
+    input  wire [31:0] HWDATA,
+    input  wire        HREADY,
+
+    output reg  [31:0] HRDATA,
+    output reg         HREADYOUT,
+    output wire        HRESP
+);
+
+    reg [31:0] mem [0:255];
+
+    reg [1:0] wait_count;
+
+    assign HRESP = 1'b0;   // OKAY response
+
+    wire valid_transfer;
+    assign valid_transfer =
+        (HTRANS == 2'b10 || HTRANS == 2'b11);
+
+    // ==========================================
+    // WAIT STATE GENERATION (Fixed 2 cycles)
+    // ==========================================
+
+    always @(posedge HCLK or negedge HRESETn) begin
+        if (!HRESETn) begin
+            wait_count <= 0;
+            HREADYOUT  <= 1;
+        end
+        else begin
+
+            if (valid_transfer && HREADY && wait_count == 0) begin
+                wait_count <= 2;      // Insert 2 wait cycles
+                HREADYOUT  <= 0;
+            end
+
+            else if (wait_count != 0) begin
+                wait_count <= wait_count - 1;
+
+                if (wait_count == 1)
+                    HREADYOUT <= 1;
+                else
+                    HREADYOUT <= 0;
+            end
+        end
+    end
+
+    // ==========================================
+    // WRITE
+    // ==========================================
+
+    always @(posedge HCLK) begin
+        if (valid_transfer && HWRITE && HREADYOUT)
+            mem[HADDR[9:2]] <= HWDATA;
+    end
+
+    // ==========================================
+    // READ
+    // ==========================================
+
+    always @(posedge HCLK) begin
+        if (!HRESETn)
+            HRDATA <= 0;
+        else if (valid_transfer && !HWRITE && HREADYOUT)
+            HRDATA <= mem[HADDR[9:2]];
+    end
+
+endmodule
+===============================================================
+Cycle 1 : Address phase
+Cycle 2 : HREADYOUT = 0
+Cycle 3 : HREADYOUT = 0
+Cycle 4 : HREADYOUT = 1 → complete
+==============================================================
+Replace only wait block with:
+reg [2:0] random_wait;
+
+always @(posedge HCLK or negedge HRESETn) begin
+    if (!HRESETn) begin
+        random_wait <= 0;
+        HREADYOUT   <= 1;
+    end
+    else begin
+
+        if (valid_transfer && HREADY && random_wait == 0) begin
+            random_wait <= $urandom_range(1,3);  // Random 1–3 cycles
+            HREADYOUT   <= 0;
+        end
+
+        else if (random_wait != 0) begin
+            random_wait <= random_wait - 1;
+
+            if (random_wait == 1)
+                HREADYOUT <= 1;
+            else
+                HREADYOUT <= 0;
+        end
+    end
+end
+==================================================================
+                    +-------------+
+                    |   MASTER    |
+                    +-------------+
+                          |
+                          |
+                    +-------------+
+                    |   DECODER   |
+                    +-------------+
+                       |        |
+                       |        |
+              +-------------+   +-------------+
+              |  SLAVE 0    |   |  SLAVE 1    |
+              | (Memory0)   |   | (Memory1)   |
+              +-------------+   +-------------+
+====================================================================
+| Address Range           | Selected Slave |
+| ----------------------- | -------------- |
+| 0x0000_0000–0x0000_FFFF | Slave 0        |
+| 0x0001_0000–0x0001_FFFF | Slave 1        |
+
+======================================================================
+🎯 What You Should Test Now
+1️⃣ Write to Slave 0
+addr_top = 32'h0000_0000
+2️⃣ Write to Slave 1
+addr_top = 32'h0001_0000
+
+You should see different memories being updated.
+======================================================================
+🔥 Step 1 — Create HSEL Signals
+
+Inside ahb_top:
+
+wire HSEL0;
+wire HSEL1;
+
+assign HSEL0 = (HADDR[31:16] == 16'h0000);
+assign HSEL1 = (HADDR[31:16] == 16'h0001);
+
+Only one slave active at a time.
+
+🔥 Step 2 — Instantiate Two Slaves
+wire [31:0] HRDATA0, HRDATA1;
+wire HREADYOUT0, HREADYOUT1;
+wire HRESP0, HRESP1;
+Slave 0
+slave_ahb slave0 (
+    .HCLK(CLK),
+    .HRESETn(RESETn),
+
+    .HADDR(HADDR),
+    .HTRANS(HTRANS),
+    .HWRITE(HWRITE),
+    .HSIZE(HSIZE),
+    .HBURST(HBURST),
+    .HWDATA(HWDATA),
+    .HREADY(HREADY & HSEL0),
+
+    .HRDATA(HRDATA0),
+    .HREADYOUT(HREADYOUT0),
+    .HRESP(HRESP0)
+);
+Slave 1
+slave_ahb slave1 (
+    .HCLK(CLK),
+    .HRESETn(RESETn),
+
+    .HADDR(HADDR),
+    .HTRANS(HTRANS),
+    .HWRITE(HWRITE),
+    .HSIZE(HSIZE),
+    .HBURST(HBURST),
+    .HWDATA(HWDATA),
+    .HREADY(HREADY & HSEL1),
+
+    .HRDATA(HRDATA1),
+    .HREADYOUT(HREADYOUT1),
+    .HRESP(HRESP1)
+);
+🔥 Step 3 — MUX the Outputs Back to Master
+
+Very important.
+
+assign HRDATA =
+        HSEL0 ? HRDATA0 :
+        HSEL1 ? HRDATA1 :
+        32'h0000_0000;
+
+assign HREADY =
+        HSEL0 ? HREADYOUT0 :
+        HSEL1 ? HREADYOUT1 :
+        1'b1;
+
+assign HRESP =
+        HSEL0 ? HRESP0 :
+        HSEL1 ? HRESP1 :
+        1'b0;
