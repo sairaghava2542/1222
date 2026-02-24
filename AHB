@@ -1,0 +1,589 @@
+module master_ahb (
+    input  CLK_MASTER,
+    input  RESET_MASTER,
+    input  HREADY,
+    input  [31:0] HRDATA,
+    input  [31:0] data_top,
+
+    input  write_top,
+    input  [3:0]  Beat_length,
+    input  [31:0] addr_top,
+    input  enb,
+    input  wrap_enb,
+
+    output reg [31:0] HADDR,
+    output reg [2:0]  HSIZE,
+    output reg        HWRITE,
+    output reg [31:0] HWDATA,
+    output reg [2:0]  HBURST,
+    output reg [1:0]  HTRANS
+);
+  // ============================================================
+  // STATE DECLARATION
+  // ============================================================
+  parameter IDLE         = 3'b000;
+  parameter WRITE_SINGLE = 3'b001;
+  parameter WRITE_INCR4  = 3'b010;
+  parameter WRITE_WRAP4  = 3'b011;
+
+  reg [2:0] present_state, next_state;
+  // ============================================================
+  // INTERNAL REGISTERS
+  // ============================================================
+  reg [3:0]  count;        // Beat counter
+  reg [31:0] addr_reg;     // Internal address register
+  // ============================================================
+  // PRESENT STATE LOGIC
+  // ============================================================
+  always @(posedge CLK_MASTER) begin
+    if (RESET_MASTER)
+      present_state <= IDLE;
+    else
+      present_state <= next_state;
+  end
+  // ============================================================
+  // NEXT STATE LOGIC
+  // ============================================================
+  always @(*) begin
+    next_state = present_state;
+    case (present_state)
+      IDLE: begin
+        if (write_top && enb && HREADY) begin
+          if (Beat_length == 1)
+            next_state = WRITE_SINGLE;
+
+          else if (Beat_length == 4 && !wrap_enb)
+            next_state = WRITE_INCR4;
+
+          else if (Beat_length == 4 && wrap_enb)
+            next_state = WRITE_WRAP4;
+        end
+      end
+      WRITE_SINGLE: begin
+        if (HREADY)
+          next_state = IDLE;
+      end
+      WRITE_INCR4: begin
+        if (HREADY && count == 3)  // 4 beats (0-3)
+          next_state = IDLE;
+      end
+      WRITE_WRAP4: begin
+        if (HREADY && count == 3)
+          next_state = IDLE;
+      end
+
+      default: next_state = IDLE;
+    endcase
+  end
+  // ============================================================
+  // COUNTER LOGIC
+  // IMPORTANT:
+  // Counter increments ONLY when HREADY=1
+  // ============================================================
+  always @(posedge CLK_MASTER) begin
+    if (RESET_MASTER)
+      count <= 0;
+    else if ((present_state == WRITE_INCR4 ||
+              present_state == WRITE_WRAP4) && HREADY)
+      count <= count + 1;
+    else if (present_state == IDLE)
+      count <= 0;
+  end
+  // ============================================================
+  // ADDRESS REGISTER LOGIC
+  // INCR4 vs WRAP4 difference is here
+  // ============================================================
+  always @(posedge CLK_MASTER) begin
+    if (RESET_MASTER)
+      addr_reg <= 32'd0;
+
+    // Load starting address when transfer begins
+    else if (present_state == IDLE && write_top)
+      addr_reg <= addr_top;
+    // ===============================
+    // INCR4 LOGIC
+    // ===============================
+    // Simple linear increment
+    // 0x1000 → 0x1004 → 0x1008 → 0x100C
+    else if (present_state == WRITE_INCR4 && HREADY)
+      addr_reg <= addr_reg + 4;
+    // ===============================
+    // WRAP4 LOGIC
+    // ===============================
+    // Wrap inside 16-byte boundary
+    // Example if start = 0x100C:
+    // 0x100C → 0x1000 → 0x1004 → 0x1008
+    else if (present_state == WRITE_WRAP4 && HREADY) begin
+
+      // 16-byte boundary for WRAP4
+      // Boundary size = 4 beats × 4 bytes = 16 bytes
+
+      // If last address inside block reached (offset 0xC)
+      if ((addr_reg & 32'hF) == 32'hC)
+        addr_reg <= (addr_reg & 32'hFFFF_FFF0);  // wrap to base
+
+      else
+        addr_reg <= addr_reg + 4;
+    end
+  end
+  // ============================================================
+  // OUTPUT LOGIC
+  // ============================================================
+  always @(*) begin
+    // Default outputs
+    HADDR  = addr_reg;
+    HSIZE  = 3'b010;   // 4 bytes
+    HWRITE = 1'b1;
+    HWDATA = data_top;
+    HBURST = 3'b000;
+    HTRANS = 2'b00;
+
+    case (present_state)
+      IDLE: begin
+        HWRITE = 1'b0;
+        HTRANS = 2'b00; // IDLE
+      end
+      WRITE_SINGLE: begin
+        HBURST = 3'b000;  // SINGLE
+        HTRANS = 2'b10;   // NONSEQ
+      end
+      // ===============================
+      // INCR4
+      // ===============================
+      WRITE_INCR4: begin
+        HBURST = 3'b011;  // INCR4
+        if (count == 0)
+          HTRANS = 2'b10; // First beat NONSEQ
+        else
+          HTRANS = 2'b11; // Remaining beats SEQ
+      end
+      // ===============================
+      // WRAP4
+      // ===============================
+      WRITE_WRAP4: begin
+        HBURST = 3'b010;  // WRAP4
+
+        if (count == 0)
+          HTRANS = 2'b10;
+        else
+          HTRANS = 2'b11;
+      end
+    endcase
+  end
+endmodule
+==================================================================
+WRITE AND READ
+==================================================================
+module master_ahb (
+    input  CLK_MASTER,
+    input  RESET_MASTER,
+    input  HREADY,
+    input  [31:0] HRDATA,
+    input  [31:0] data_top,
+    input  write_top,
+    input  [3:0]  Beat_length,
+    input  [31:0] addr_top,
+    input  enb,
+    input  wrap_enb,
+    output reg [31:0] HADDR,
+    output reg [2:0]  HSIZE,
+    output reg        HWRITE,
+    output reg [31:0] HWDATA,
+    output reg [2:0]  HBURST,
+    output reg [1:0]  HTRANS
+);
+  // =====================================================
+  // STATE DECLARATION
+  // =====================================================
+  parameter IDLE         = 3'b000;
+  parameter WRITE_SINGLE = 3'b001;
+  parameter WRITE_INCR4  = 3'b010;
+  parameter WRITE_WRAP4  = 3'b011;
+  parameter READ_SINGLE  = 3'b100;
+  parameter READ_INCR4   = 3'b101;
+  parameter READ_WRAP4   = 3'b110;
+  reg [2:0] present_state, next_state;
+  // =====================================================
+  // INTERNAL REGISTERS
+  // =====================================================
+  reg [3:0]  count;
+  reg [31:0] addr_reg;
+  reg [31:0] read_data_reg;
+  // =====================================================
+  // STATE REGISTER
+  // =====================================================
+  always @(posedge CLK_MASTER) begin
+    if (RESET_MASTER)
+      present_state <= IDLE;
+    else
+      present_state <= next_state;
+  end
+  // =====================================================
+  // NEXT STATE LOGIC
+  // =====================================================
+  always @(*) begin
+    next_state = present_state;
+    case (present_state)
+      IDLE: begin
+        if (enb && HREADY) begin
+          // WRITE selection
+          if (write_top) begin
+            if (Beat_length == 1)
+              next_state = WRITE_SINGLE;
+            else if (Beat_length == 4 && !wrap_enb)
+              next_state = WRITE_INCR4;
+            else if (Beat_length == 4 && wrap_enb)
+              next_state = WRITE_WRAP4;
+          end
+          // READ selection
+          else begin
+            if (Beat_length == 1)
+              next_state = READ_SINGLE;
+            else if (Beat_length == 4 && !wrap_enb)
+              next_state = READ_INCR4;
+            else if (Beat_length == 4 && wrap_enb)
+              next_state = READ_WRAP4;
+          end
+        end
+      end
+      // All burst types return to IDLE after last beat
+      WRITE_INCR4, WRITE_WRAP4,
+      READ_INCR4, READ_WRAP4:
+        if (HREADY && count == 3)
+          next_state = IDLE;
+
+      WRITE_SINGLE, READ_SINGLE:
+        if (HREADY)
+          next_state = IDLE;
+
+      default: next_state = IDLE;
+    endcase
+  end
+  // =====================================================
+  // COUNTER (Only when HREADY = 1)
+  // =====================================================
+  always @(posedge CLK_MASTER) begin
+    if (RESET_MASTER)
+      count <= 0;
+    else if ((present_state == WRITE_INCR4 ||
+              present_state == WRITE_WRAP4 ||
+              present_state == READ_INCR4  ||
+              present_state == READ_WRAP4) && HREADY)
+      count <= count + 1;
+
+    else if (present_state == IDLE)
+      count <= 0;
+  end
+  // =====================================================
+  // ADDRESS REGISTER
+  // =====================================================
+  always @(posedge CLK_MASTER) begin
+    if (RESET_MASTER)
+      addr_reg <= 0;
+
+    else if (present_state == IDLE && enb)
+      addr_reg <= addr_top;
+
+    // INCR4 (Read & Write)
+    else if ((present_state == WRITE_INCR4 ||
+              present_state == READ_INCR4) && HREADY)
+      addr_reg <= addr_reg + 4;
+    // WRAP4 (Read & Write)
+    else if ((present_state == WRITE_WRAP4 ||
+              present_state == READ_WRAP4) && HREADY) begin
+      if ((addr_reg & 32'hF) == 32'hC)
+        addr_reg <= (addr_reg & 32'hFFFF_FFF0);
+      else
+        addr_reg <= addr_reg + 4;
+    end
+  end
+  // =====================================================
+  // READ DATA CAPTURE
+  // IMPORTANT: Only when HREADY = 1
+  // =====================================================
+  always @(posedge CLK_MASTER) begin
+    if (RESET_MASTER)
+      read_data_reg <= 0;
+
+    else if ((present_state == READ_SINGLE ||
+              present_state == READ_INCR4  ||
+              present_state == READ_WRAP4) && HREADY)
+      read_data_reg <= HRDATA;
+  end
+  // =====================================================
+  // OUTPUT LOGIC
+  // =====================================================
+  always @(*) begin
+    HADDR  = addr_reg;
+    HSIZE  = 3'b010;
+    HWRITE = 1'b1;
+    HWDATA = data_top;
+    HBURST = 3'b000;
+    HTRANS = 2'b00;
+    case (present_state)
+      IDLE: begin
+        HWRITE = 0;
+        HTRANS = 2'b00;
+      end
+      WRITE_SINGLE: begin
+        HBURST = 3'b000;
+        HTRANS = 2'b10;
+      end
+      WRITE_INCR4: begin
+        HBURST = 3'b011;
+        HTRANS = (count==0) ? 2'b10 : 2'b11;
+      end
+      WRITE_WRAP4: begin
+        HBURST = 3'b010;
+        HTRANS = (count==0) ? 2'b10 : 2'b11;
+      end
+      READ_SINGLE: begin
+        HWRITE = 0;
+        HBURST = 3'b000;
+        HTRANS = 2'b10;
+      end
+      READ_INCR4: begin
+        HWRITE = 0;
+        HBURST = 3'b011;
+        HTRANS = (count==0) ? 2'b10 : 2'b11;
+      end
+      READ_WRAP4: begin
+        HWRITE = 0;
+        HBURST = 3'b010;
+        HTRANS = (count==0) ? 2'b10 : 2'b11;
+      end
+    endcase
+  end
+endmodule
+============================================================================================
+SLAVE MEMORY
+============================================================================================
+module slave_ahb (
+    input  wire        HCLK,
+    input  wire        HRESETn,
+    // AHB Inputs
+    input  wire [31:0] HADDR,
+    input  wire [1:0]  HTRANS,
+    input  wire        HWRITE,
+    input  wire [2:0]  HSIZE,
+    input  wire [2:0]  HBURST,
+    input  wire [31:0] HWDATA,
+    input  wire        HREADY,
+    // AHB Outputs
+    output reg  [31:0] HRDATA,
+    output wire        HREADYOUT,
+    output wire        HRESP
+);
+    // =====================================================
+    // Internal Memory
+    // =====================================================
+    reg [31:0] mem [0:255];   // 256 x 32-bit memory
+    // =====================================================
+    // Always Ready (Zero Wait State)
+    // =====================================================
+    assign HREADYOUT = 1'b1;   // always ready
+    assign HRESP     = 1'b0;   // OKAY response
+    // =====================================================
+    // Address Valid Detection
+    // =====================================================
+    wire valid_transfer;
+    assign valid_transfer =
+            HREADY &&
+            (HTRANS == 2'b10 || HTRANS == 2'b11);
+    // =====================================================
+    // WRITE LOGIC
+    // =====================================================
+    always @(posedge HCLK) begin
+        if (!HRESETn) begin
+            // Optional: clear memory
+        end
+        else if (valid_transfer && HWRITE) begin
+            mem[HADDR[9:2]] <= HWDATA;
+        end
+    end
+    // =====================================================
+    // READ LOGIC (Pipelined)
+    // =====================================================
+    always @(posedge HCLK) begin
+        if (!HRESETn)
+            HRDATA <= 32'd0;
+
+        else if (valid_transfer && !HWRITE)
+            HRDATA <= mem[HADDR[9:2]];
+    end
+endmodule
+====================================================================
+INTERCONNECTION
+====================================================================
+module ahb_top (
+    input  CLK,
+    input  RESETn,
+    // User Inputs to Master
+    input        enb,
+    input        write_top,
+    input  [3:0] Beat_length,
+    input  [31:0] addr_top,
+    input  [31:0] data_top,
+    input        wrap_enb
+);
+    // ==========================================
+    // AHB Internal Wires
+    // ==========================================
+    wire [31:0] HADDR;
+    wire [2:0]  HSIZE;
+    wire        HWRITE;
+    wire [31:0] HWDATA;
+    wire [2:0]  HBURST;
+    wire [1:0]  HTRANS;
+    wire [31:0] HRDATA;
+    wire        HREADY;
+    wire        HREADYOUT;
+    wire        HRESP;
+    // ==========================================
+    // Master Instance
+    // ==========================================
+    master_ahb master_inst (
+        .CLK_MASTER (CLK),
+        .RESET_MASTER (~RESETn),
+        .HREADY      (HREADY),
+        .HRDATA      (HRDATA),
+
+        .data_top    (data_top),
+        .write_top   (write_top),
+        .Beat_length (Beat_length),
+        .addr_top    (addr_top),
+        .enb         (enb),
+        .wrap_enb    (wrap_enb),
+        .HADDR  (HADDR),
+        .HSIZE  (HSIZE),
+        .HWRITE (HWRITE),
+        .HWDATA (HWDATA),
+        .HBURST (HBURST),
+        .HTRANS (HTRANS)
+    );
+    // ==========================================
+    // Slave Instance
+    // ==========================================
+    slave_ahb slave_inst (
+        .HCLK      (CLK),
+        .HRESETn   (RESETn),
+        .HADDR     (HADDR),
+        .HTRANS    (HTRANS),
+        .HWRITE    (HWRITE),
+        .HSIZE     (HSIZE),
+        .HBURST    (HBURST),
+        .HWDATA    (HWDATA),
+        .HREADY    (HREADY),
+        .HRDATA    (HRDATA),
+        .HREADYOUT (HREADYOUT),
+        .HRESP     (HRESP)
+    );
+    // ==========================================
+    // HREADY Connection (AHB-Lite)
+    // ==========================================
+    assign HREADY = HREADYOUT;
+endmodule
+=================================================
+TESTBENCH
+=================================================
+We will:
+1] Generate clock
+2] Apply reset
+3] Do INCR4 WRITE
+4] Do INCR4 READ
+5] Check if data matches
+===============================================
+We will test this sequence:
+Write INCR4 starting at 0x00000000
+Write data: 11, 22, 33, 44
+Then read INCR4 from same address
+Expected read:
+11
+22
+33
+44
+=================================================
+`timescale 1ns/1ps
+module tb_ahb;
+  reg CLK;
+  reg RESETn;
+  reg enb;
+  reg write_top;
+  reg [3:0] Beat_length;
+  reg [31:0] addr_top;
+  reg [31:0] data_top;
+  reg wrap_enb;
+  // Instantiate TOP
+  ahb_top DUT (
+      .CLK(CLK),
+      .RESETn(RESETn),
+      .enb(enb),
+      .write_top(write_top),
+      .Beat_length(Beat_length),
+      .addr_top(addr_top),
+      .data_top(data_top),
+      .wrap_enb(wrap_enb)
+  );
+  // ==========================================
+  // CLOCK GENERATION (10ns period)
+  // ==========================================
+  initial begin
+    CLK = 0;
+    forever #5 CLK = ~CLK;
+  end
+  // ==========================================
+  // RESET
+  // ==========================================
+  initial begin
+    RESETn = 0;
+    #20;
+    RESETn = 1;
+  end
+  // ==========================================
+  // TEST SEQUENCE
+  // ==========================================
+  initial begin
+
+    // Initialize
+    enb = 0;
+    write_top = 0;
+    Beat_length = 0;
+    addr_top = 0;
+    data_top = 0;
+    wrap_enb = 0;
+    #30;
+    // =====================================================
+    // INCR4 WRITE
+    // =====================================================
+    $display("Starting INCR4 WRITE");
+
+    addr_top = 32'h0000_0000;
+    Beat_length = 4;
+    wrap_enb = 0;
+    write_top = 1;
+    enb = 1;
+    // Send 4 data beats
+    data_top = 32'd11; #10;
+    data_top = 32'd22; #10;
+    data_top = 32'd33; #10;
+    data_top = 32'd44; #10;
+
+    enb = 0;
+    write_top = 0;
+    #40;
+    // =====================================================
+    // INCR4 READ
+    // =====================================================
+    $display("Starting INCR4 READ");
+    addr_top = 32'h0000_0000;
+    Beat_length = 4;
+    wrap_enb = 0;
+    write_top = 0;
+    enb = 1;
+    #50;
+    enb = 0;
+    #50;
+    $display("Simulation Finished");
+    $stop;
+  end
+endmodule
